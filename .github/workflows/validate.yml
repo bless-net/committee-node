@@ -1,0 +1,60 @@
+name: Validate Committee Node
+
+on:
+  pull_request:
+    paths:
+      - "committee-node/**"
+      - ".github/workflows/committee-node-validate.yml"
+  push:
+    branches: [ main ]
+    paths:
+      - "committee-node/**"
+      - ".github/workflows/committee-node-validate.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare committee node inputs
+        working-directory: committee-node
+        run: |
+          mkdir -p env bls_keys data validator-data
+          touch bls_keys/das_bls bls_keys/das_bls.pub
+          chmod 600 bls_keys/das_bls bls_keys/das_bls.pub
+
+          cat > env/das.env <<'EOF'
+          DAS_IMAGE=offchainlabs/nitro-node@sha256:597b913351e0efcd3452c9921d6f9b64e4e89de77dec2cabcc05f784d0f9b969
+          CHAIN_NAME=Blessnet
+          PARENT_CHAIN_RPC=https://example.invalid/rpc
+          SEQUENCER_INBOX_ADDRESS=0x1111111111111111111111111111111111111111
+          DAS_RPC_BIND=127.0.0.1
+          DAS_REST_BIND=127.0.0.1
+          DAS_CPU_LIMIT=1.0
+          DAS_MEM_LIMIT=2g
+          EOF
+
+          cat > env/validator.env <<'EOF'
+          VALIDATOR_IMAGE=offchainlabs/nitro-node@sha256:597b913351e0efcd3452c9921d6f9b64e4e89de77dec2cabcc05f784d0f9b969
+          CHAIN_NAME=Blessnet
+          CHAIN_INFO_JSON=[{"chain-id":45513,"parent-chain-id":1}]
+          PARENT_CHAIN_RPC=https://example.invalid/rpc
+          PARENT_CHAIN_BEACON_RPC=https://example.invalid/beacon
+          SEQUENCER_FEED_URL=ws://example.com:9642
+          SEQUENCER_FORWARDING_TARGET=https://example.com/rpc
+          VALIDATOR_PRIVATE_KEY=0x0123456789012345678901234567890123456789012345678901234567890123
+          ASSERTION_INTERVAL=0h15m0s
+          ENABLE_FAST_CONFIRMATION=true
+          VALIDATOR_RPC_BIND=127.0.0.1
+          VALIDATOR_CPU_LIMIT=2.0
+          VALIDATOR_MEM_LIMIT=6g
+          EOF
+
+      - name: Validate env + render compose
+        working-directory: committee-node
+        run: |
+          chmod +x scripts/*.sh checks/*.sh
+          make validate
+          make render
