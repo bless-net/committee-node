@@ -28,7 +28,7 @@ Storage (Blessnet mainnet starting points):
 
 The droplet root disk only needs room for the OS, Docker, and this git checkout — **not** for chain data. Attach two separate Block Storage volumes at droplet creation (see [Setup](#setup-follow-in-order)).
 
-Required software (installed in [step 3](#3-install-host-software)):
+Required software (installed in [step 4](#4-install-host-software)):
 
 | Package | Purpose |
 |---------|---------|
@@ -40,25 +40,40 @@ Required software (installed in [step 3](#3-install-host-software)):
 
 Production-like setups should run DAS and validator on **separate hosts**. If you keep them co-hosted in production, use at least 4 vCPU and 16 GiB RAM with both volumes above attached.
 
+All day-to-day work runs as a **non-root operator user** with `sudo`. Root is only for initial bootstrap (steps 2.1–2.3).
+
 ## Setup (follow in order)
 
 Work through these steps on a **new** server before running any committee-node containers.
+
+Set these on your **local machine** before you start (used throughout):
+
+```bash
+export NODE_IP=<droplet-public-ip>
+export ADMIN_SSH_KEY=~/.ssh/id_ed25519    # your admin private key
+export OP_USER=<your-username>            # non-root operator, e.g. omnus
+```
 
 ### 1. Create droplet and attach Block Storage volumes
 
 In the [DigitalOcean control panel](https://cloud.digitalocean.com/droplets/new):
 
-1. **Choose an image**: Ubuntu 24.04 LTS (or 22.04 LTS)
-2. **Choose a plan**: at least 4 vCPU / 16 GiB RAM recommended
-3. **Add block storage volumes** (same region as the droplet — attach them now, not later):
+1. **Create → Droplets**
+2. **Image:** Ubuntu LTS (22.04 or 24.04)
+3. **Size:** at least 4 vCPU / 16 GiB RAM recommended (minimum 2 vCPU / 8 GiB RAM)
+4. **Region:** same region as your other Blessnet infrastructure (e.g. `nyc3`)
+5. **Add block storage volumes** (same region — attach them now, not later):
    - `blessnet-das-data` — 50–100 GB
    - `blessnet-validator-data` — 100–200 GB
-4. **Create the droplet** and note its public IP
+6. **Authentication:** SSH keys only — add your admin public key; **do not** enable root password login
+7. **Firewall (recommended):** create or attach a cloud firewall that allows **inbound SSH (`22/tcp`) only from your admin IP or VPN CIDR**
+8. **Hostname:** `blessnet-mainnet-committee-node` (or `blessnet-testnet-committee-node` for testnet)
+9. **Create the droplet** and set `NODE_IP` to its public IP
 
-Alternatively, with [`doctl`](https://docs.digitalocean.com/reference/doctl/) (replace region and size as needed):
+Alternatively, with [`doctl`](https://docs.digitalocean.com/reference/doctl/) (replace region, size, and SSH key fingerprint):
 
 ```bash
-doctl compute droplet create blessnet-committee-node \
+doctl compute droplet create blessnet-mainnet-committee-node \
   --region nyc3 \
   --size s-4vcpu-16gb \
   --image ubuntu-24-04-x64 \
@@ -70,21 +85,134 @@ doctl compute volume attach blessnet-das-data <droplet-id>
 doctl compute volume attach blessnet-validator-data <droplet-id>
 ```
 
-SSH in as root or your deploy user:
+### 2. Bootstrap access and harden the host
+
+#### 2.1 First login (root, key-only)
 
 ```bash
-ssh root@<droplet-ip>
+ssh -i "$ADMIN_SSH_KEY" root@"${NODE_IP}"
 ```
 
-### 2. Format and mount volumes
+Keep this root session open until **step 2.3** validates operator login in a second terminal.
 
-Do this **immediately after first login**, before installing Docker or cloning this repo. The volumes attached in step 1 appear as extra block devices — confirm with:
+#### 2.2 Create a non-root operator user (required)
+
+Run **once as `root`**:
+
+```bash
+export OP_USER="${OP_USER:-omnus}"
+adduser "$OP_USER"
+usermod -aG sudo "$OP_USER"
+
+install -d -m 700 "/home/$OP_USER/.ssh"
+cp /root/.ssh/authorized_keys "/home/$OP_USER/.ssh/authorized_keys"
+chown -R "$OP_USER:$OP_USER" "/home/$OP_USER/.ssh"
+chmod 600 "/home/$OP_USER/.ssh/authorized_keys"
+```
+
+Validate in a **second terminal** before changing SSH settings (leave the root session open):
+
+```bash
+ssh -i "$ADMIN_SSH_KEY" "${OP_USER}@${NODE_IP}"
+whoami    # expect: your OP_USER
+sudo -v   # expect: succeeds
+groups    # expect: includes sudo
+exit
+```
+
+If validation succeeds, **return to your original `root` session** for step 2.3. Keep that root session open until step 2.3 confirms operator login still works — then close root and use `"$OP_USER"` from step 2.4 onward.
+
+#### 2.3 Harden SSH (required — disable root login and password auth)
+
+Run as **`root`** (still in your original session) **only after** step 2.2 validation succeeds:
+
+```bash
+cp /etc/ssh/sshd_config "/etc/ssh/sshd_config.bak.$(date +%Y%m%d%H%M%S)"
+
+# Key-only auth; no root SSH
+sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
+
+if grep -q '^#\?PubkeyAuthentication' /etc/ssh/sshd_config; then
+  sed -i 's/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+else
+  echo 'PubkeyAuthentication yes' >> /etc/ssh/sshd_config
+fi
+
+sshd -t
+systemctl reload ssh
+```
+
+Confirm operator login still works in another terminal:
+
+```bash
+ssh -i "$ADMIN_SSH_KEY" "${OP_USER}@${NODE_IP}"
+```
+
+Then **close the root session**. Do all further work as `"$OP_USER"`.
+
+If you lock yourself out, use the DigitalOcean Droplet **Recovery Console** to fix `sshd_config` or temporarily re-enable access.
+
+#### 2.4 Host hardening (automatic updates, fail2ban, firewall)
+
+Run as your **operator user** with `sudo`:
+
+```bash
+ssh -i "$ADMIN_SSH_KEY" "${OP_USER}@${NODE_IP}"
+
+# Automatic security updates
+sudo apt update
+sudo apt install -y unattended-upgrades apt-listchanges
+sudo dpkg-reconfigure -plow unattended-upgrades
+
+# fail2ban (edit jail.local, not jail.conf)
+sudo apt install -y fail2ban
+sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+sudo systemctl enable --now fail2ban
+```
+
+Add or update the `[sshd]` block in `/etc/fail2ban/jail.local` (`sudo nano /etc/fail2ban/jail.local`):
+
+```ini
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1
+banaction = ufw
+backend = systemd
+
+[sshd]
+enabled = true
+port = ssh
+logpath = %(sshd_log)s
+maxretry = 5
+bantime = 1h
+findtime = 10m
+```
+
+Add your admin IP or VPN CIDR to `ignoreip` so you do not ban yourself.
+
+```bash
+sudo fail2ban-client reload
+sudo fail2ban-client status sshd
+
+# UFW — allow SSH before enabling
+sudo ufw allow OpenSSH
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw enable
+sudo ufw status verbose
+```
+
+Committee-node services bind RPC to `127.0.0.1` by default (`env/*.example`), so inbound access beyond SSH is not required on this host.
+
+### 3. Format and mount volumes
+
+As your **operator user**, format and mount the block volumes attached in step 1. Do this before installing Docker or cloning this repo.
 
 ```bash
 lsblk -f
 ```
 
-Format each volume once (use the `/dev/disk/by-id/scsi-0DO_Volume_*` paths from `lsblk` — do **not** format the root disk):
+Format each volume once (use the `/dev/disk/by-id/scsi-0DO_Volume_*` paths from `lsblk` — do **not** format the root filesystem disk):
 
 ```bash
 DAS_DEV=/dev/disk/by-id/scsi-0DO_Volume_blessnet-das-data
@@ -110,7 +238,9 @@ df -h /mnt/das-data /mnt/validator-data
 
 Both mount points should show the expected volume sizes and be empty.
 
-### 3. Install host software
+### 4. Install host software
+
+Still as your **operator user**:
 
 ```bash
 sudo apt-get update
@@ -143,9 +273,9 @@ docker compose version    # expect Compose v2.x
 docker run --rm hello-world
 ```
 
-### 4. Clone the repository and wire storage
+### 5. Clone the repository and wire storage
 
-`compose.yaml` bind-mounts `./data` and `./validator-data`. Point those at the volumes mounted in step 2:
+`compose.yaml` bind-mounts `./data` and `./validator-data`. Point those at the volumes mounted in step 3:
 
 ```bash
 git clone https://github.com/bless-net/committee-node.git
@@ -156,9 +286,9 @@ ln -s /mnt/validator-data validator-data
 ls -la data validator-data    # should resolve to /mnt/*
 ```
 
-`bls_keys/` stays on the root disk — it is small and sensitive; back it up separately from the bulk data volumes.
+`bls_keys/` stays on the droplet root disk — it is small and sensitive; back it up separately from the bulk data volumes.
 
-### 5. Configure environment and keys
+### 6. Configure environment and keys
 
 Copy the example templates — do **not** edit the `.example` files in place:
 
@@ -181,7 +311,7 @@ chmod 700 bls_keys
 chmod 600 bls_keys/das_bls bls_keys/das_bls.pub
 ```
 
-### 6. Start and verify
+### 7. Start and verify
 
 ```bash
 chmod +x scripts/*.sh checks/*.sh
@@ -195,7 +325,7 @@ make doctor
 
 ### Non-DigitalOcean hosts
 
-If you are not on DigitalOcean, provision two separate disks with the sizes above, then follow [step 2](#2-format-and-mount-volumes) to format and mount them at `/mnt/das-data` and `/mnt/validator-data` before continuing with [step 3](#3-install-host-software).
+If you are not on DigitalOcean, follow the same bootstrap and hardening pattern (steps 2.1–2.4), provision two separate disks with the sizes above, then complete [step 3](#3-format-and-mount-volumes) before continuing.
 
 ## Runtime Operations
 
