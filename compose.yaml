@@ -1,0 +1,87 @@
+services:
+  arbitrum-das:
+    image: ${DAS_IMAGE:?missing DAS_IMAGE}
+    container_name: arbitrum-das
+    restart: unless-stopped
+    entrypoint:
+      - daserver
+    ports:
+      - "${DAS_RPC_BIND:-127.0.0.1}:9876:9876"
+      - "${DAS_REST_BIND:-127.0.0.1}:9877:9877"
+    volumes:
+      - ./bls_keys:/home/user/data/keys
+      - ./data:/home/user/data/das-data
+    command:
+      - --data-availability.parent-chain-node-url
+      - ${PARENT_CHAIN_RPC:?missing PARENT_CHAIN_RPC}
+      - --data-availability.sequencer-inbox-address
+      - ${SEQUENCER_INBOX_ADDRESS:?missing SEQUENCER_INBOX_ADDRESS}
+      - --data-availability.key.key-dir
+      - /home/user/data/keys
+      - --enable-rpc
+      - --rpc-addr
+      - 0.0.0.0
+      - --rpc-port
+      - "9876"
+      - --enable-rest
+      - --rest-addr
+      - 0.0.0.0
+      - --rest-port
+      - "9877"
+      - --data-availability.local-cache.enable
+      - --data-availability.local-file-storage.enable
+      - --data-availability.local-file-storage.data-dir
+      - /home/user/data/das-data
+    deploy:
+      resources:
+        limits:
+          cpus: "${DAS_CPU_LIMIT:-1.0}"
+          memory: "${DAS_MEM_LIMIT:-2g}"
+
+  validator:
+    image: ${VALIDATOR_IMAGE:?missing VALIDATOR_IMAGE}
+    container_name: orbit-validator
+    restart: unless-stopped
+    depends_on:
+      - arbitrum-das
+    ports:
+      - "${VALIDATOR_RPC_BIND:-127.0.0.1}:8547:8547"
+    volumes:
+      - ./validator-data:/home/user/.arbitrum
+    command:
+      - --parent-chain.connection.url
+      - ${PARENT_CHAIN_RPC:?missing PARENT_CHAIN_RPC}
+      - --parent-chain.blob-client.beacon-url
+      - ${PARENT_CHAIN_BEACON_RPC:?missing PARENT_CHAIN_BEACON_RPC}
+      - --chain.name
+      - ${CHAIN_NAME:?missing CHAIN_NAME}
+      - --chain.info-json
+      - ${CHAIN_INFO_JSON:?missing CHAIN_INFO_JSON}
+      - --node.feed.input.url
+      - ${SEQUENCER_FEED_URL:?missing SEQUENCER_FEED_URL}
+      - --execution.forwarding-target
+      - ${SEQUENCER_FORWARDING_TARGET:?missing SEQUENCER_FORWARDING_TARGET}
+      - --node.sequencer=false
+      - --node.batch-poster.enable=false
+      - --node.staker.enable=true
+      - --node.staker.strategy
+      - MakeNodes
+      - --node.staker.parent-chain-wallet.private-key
+      - ${VALIDATOR_PRIVATE_KEY:?missing VALIDATOR_PRIVATE_KEY}
+      - --node.bold.enable-fast-confirmation=${ENABLE_FAST_CONFIRMATION:-true}
+      - --node.bold.assertion-posting-interval
+      - ${ASSERTION_INTERVAL:?missing ASSERTION_INTERVAL}
+      - --node.data-availability.rest-aggregator.enable=true
+      - --node.data-availability.rest-aggregator.urls
+      - http://arbitrum-das:9877
+      - --http.api
+      - net,web3,eth,arb
+      - --http.addr
+      - 0.0.0.0
+      - --http.port
+      - "8547"
+    deploy:
+      resources:
+        limits:
+          cpus: "${VALIDATOR_CPU_LIMIT:-2.0}"
+          memory: "${VALIDATOR_MEM_LIMIT:-6g}"
