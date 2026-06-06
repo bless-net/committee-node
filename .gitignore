@@ -1,1 +1,17 @@
+# macOS
 .DS_Store
+
+# Runtime secrets (copy from env/*.example)
+env/das.env
+env/validator.env
+
+# DAS BLS keypair (generate or install locally)
+bls_keys/*
+!bls_keys/.gitkeep
+
+# Runtime data
+data/
+validator-data/
+
+# Upgrade backups (copies of env files with secrets)
+.backup/
