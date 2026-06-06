@@ -88,24 +88,102 @@ The deployment expects this on the host:
 
 ```text
 committee-node/
-  bls_keys/         # DAS BLS keypair (sensitive)
+  bls_keys/         # DAS BLS keypair (sensitive; keep on root disk)
     das_bls
     das_bls.pub
-  data/             # DAS local cache/file storage
-  validator-data/   # Nitro validator DB/state
+  data/             # DAS local cache/file storage  → use a dedicated volume
+  validator-data/   # Nitro validator DB/state       → use a dedicated volume
 ```
 
-Recommended mount strategy:
+`compose.yaml` bind-mounts `./data` and `./validator-data` into the containers. Do **not** let these grow on the droplet root disk — attach separate block volumes and point these directories at them (see below).
 
-- Keep `committee-node/` on a dedicated data disk (not tiny root disk), or
-- Bind `data/` and `validator-data/` to dedicated volumes.
+Suggested sizing for Blessnet mainnet (starting points):
 
-Suggested sizing (starting points):
+| Path | Purpose | Suggested volume size |
+|------|---------|----------------------|
+| `data/` | DAS cache and file storage | 50–100 GB |
+| `validator-data/` | Nitro validator chain DB | 100–200 GB |
 
-- `data/` (DAS): 20-50 GB testnet, larger for long retention
-- `validator-data/`: 50-100 GB testnet, larger for long-lived networks
+Production-like setups should run DAS and validator on **separate hosts**. If you keep them co-hosted in production, use at least 4 vCPU, 16 GiB RAM, and attach both volumes above.
 
-Production-like setups should run DAS and validator on **separate hosts**. If you keep them co-hosted in production, use at least 4 vCPU, 16 GiB RAM, and 300+ GB SSD.
+### DigitalOcean Block Storage (recommended)
+
+On DigitalOcean, create **two Block Storage volumes** in the **same region** as your droplet — one for DAS, one for the validator. Keep the droplet root disk for the OS, Docker, this git checkout, and `bls_keys/` only.
+
+| Volume name (example) | Size | Mount on host | Repo path |
+|-----------------------|------|---------------|-----------|
+| `blessnet-das-data` | 50–100 GB | `/mnt/das-data` | `data/` |
+| `blessnet-validator-data` | 100–200 GB | `/mnt/validator-data` | `validator-data/` |
+
+#### 1. Create and attach volumes
+
+In the [DigitalOcean control panel](https://cloud.digitalocean.com/volumes):
+
+1. **Create → Volumes → Block Storage**
+2. Create `blessnet-das-data` (50–100 GB) and `blessnet-validator-data` (100–200 GB) in the droplet's region
+3. Attach both volumes to your committee-node droplet
+
+Alternatively, with [`doctl`](https://docs.digitalocean.com/reference/doctl/) (replace names, region, and droplet ID):
+
+```bash
+doctl compute volume create blessnet-das-data --region nyc3 --size 100GiB
+doctl compute volume create blessnet-validator-data --region nyc3 --size 200GiB
+doctl compute volume attach blessnet-das-data <droplet-id>
+doctl compute volume attach blessnet-validator-data <droplet-id>
+```
+
+#### 2. Format and mount (Ubuntu)
+
+On the droplet, identify the new devices (names vary; `lsblk` is the reliable check):
+
+```bash
+lsblk -f
+```
+
+Format each volume once (use the `/dev/disk/by-id/scsi-0DO_Volume_*` path from `lsblk` — do **not** format the root disk):
+
+```bash
+# Replace the device paths below with your volume IDs from lsblk
+DAS_DEV=/dev/disk/by-id/scsi-0DO_Volume_blessnet-das-data
+VALIDATOR_DEV=/dev/disk/by-id/scsi-0DO_Volume_blessnet-validator-data
+
+sudo mkfs.ext4 -F "$DAS_DEV"
+sudo mkfs.ext4 -F "$VALIDATOR_DEV"
+
+sudo mkdir -p /mnt/das-data /mnt/validator-data
+```
+
+Add persistent mounts (replace UUIDs with output from `sudo blkid`):
+
+```bash
+sudo tee -a /etc/fstab <<'EOF'
+UUID=<das-data-uuid>       /mnt/das-data       ext4 defaults,nofail,discard 0 2
+UUID=<validator-data-uuid> /mnt/validator-data ext4 defaults,nofail,discard 0 2
+EOF
+
+sudo mount -a
+df -h /mnt/das-data /mnt/validator-data
+```
+
+#### 3. Wire volumes into this repository
+
+After cloning the repo (see [Quick Start](#quick-start)), link the repo paths to the mounted volumes:
+
+```bash
+cd committee-node
+mkdir -p bls_keys
+rm -rf data validator-data
+ln -s /mnt/das-data data
+ln -s /mnt/validator-data validator-data
+```
+
+Confirm Docker will see the mounts:
+
+```bash
+ls -la data validator-data
+```
+
+`bls_keys/` stays on the root disk — it is small and sensitive; back it up separately from the bulk data volumes.
 
 ## What You Provide
 
@@ -123,13 +201,28 @@ Required secret inputs:
 
 ## Quick Start
 
-Complete [Install Host Software](#install-host-software-ubuntu) first.
+Complete [Install Host Software](#install-host-software-ubuntu) first. If you are on DigitalOcean, also complete [DigitalOcean Block Storage](#digitalocean-block-storage-recommended) before starting containers.
 
 ### 1. Clone this repository
 
 ```bash
 git clone https://github.com/bless-net/committee-node.git
 cd committee-node
+```
+
+If using DO Block Storage, wire the mounted volumes now:
+
+```bash
+mkdir -p bls_keys
+rm -rf data validator-data
+ln -s /mnt/das-data data
+ln -s /mnt/validator-data validator-data
+```
+
+Otherwise create local data directories on a disk with enough free space:
+
+```bash
+mkdir -p bls_keys data validator-data
 ```
 
 ### 2. Create runtime env files
@@ -143,12 +236,11 @@ cp env/validator.env.example env/validator.env
 
 Edit both files and replace every `REPLACE_ME` value with your Blessnet mainnet endpoints, contract addresses, and keys.
 
-You will also need a DAS BLS keypair on disk:
+Install your DAS BLS keypair and set permissions:
 
 ```bash
-mkdir -p bls_keys data validator-data
-chmod 700 bls_keys
 # place das_bls and das_bls.pub in bls_keys/ (provided separately)
+chmod 700 bls_keys
 chmod 600 bls_keys/das_bls bls_keys/das_bls.pub
 ```
 
