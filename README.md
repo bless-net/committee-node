@@ -9,23 +9,78 @@ A committee node runs both:
 
 Production-like setups may split DAS and validator across separate hosts using the same deployment.
 
-## Host Prerequisites
+## Host Requirements
 
-Recommended host baseline (co-hosted DAS + validator):
+Use a fresh **Ubuntu 22.04 or 24.04** VM or bare-metal host (other modern Linux distros may work, but these instructions target Ubuntu).
 
-- Ubuntu 22.04+ (or equivalent modern Linux)
-- Docker Engine 24+
-- Docker Compose v2 plugin
-- `bash`, `curl`, `jq`, `make`
+Minimum hardware for co-hosted DAS + validator:
 
-Quick checks:
+- **Recommended**: 4 vCPU, 16 GiB RAM, 200+ GB SSD
+- **Minimum**: 2 vCPU, 8 GiB RAM, 120 GB SSD
+
+Required software:
+
+| Package | Purpose |
+|---------|---------|
+| Docker Engine 24+ | Runs DAS and validator containers |
+| Docker Compose v2 plugin | `docker compose` commands used by this repo |
+| `git` | Clone this repository |
+| `curl`, `jq`, `make` | Health checks and Makefile targets |
+| `bash` | Install/upgrade scripts |
+
+## Install Host Software (Ubuntu)
+
+Run these steps on the host **before** configuring the committee node.
+
+### 1. Update the system
 
 ```bash
-docker --version
-docker compose version
+sudo apt-get update
+sudo apt-get upgrade -y
+sudo apt-get install -y ca-certificates curl git jq make
+```
+
+### 2. Install Docker Engine and Compose plugin
+
+Use Docker's official apt repository (not the older `docker.io` package from Ubuntu):
+
+```bash
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "${VERSION_CODENAME}") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+Enable Docker on boot and start it now:
+
+```bash
+sudo systemctl enable --now docker
+```
+
+Allow your deploy user to run Docker without `sudo` (log out and back in after this):
+
+```bash
+sudo usermod -aG docker "$USER"
+```
+
+### 3. Verify the install
+
+```bash
+docker --version          # expect 24.x or newer
+docker compose version    # expect Compose v2.x
+git --version
 jq --version
 make --version
+docker run --rm hello-world
 ```
+
+If `docker run` fails with a permission error, your shell session has not picked up the `docker` group yet — log out/in or run `newgrp docker`, then retry.
 
 ## Storage Layout
 
@@ -50,17 +105,7 @@ Suggested sizing (starting points):
 - `data/` (DAS): 20-50 GB testnet, larger for long retention
 - `validator-data/`: 50-100 GB testnet, larger for long-lived networks
 
-## Minimum Specs
-
-For co-hosted DAS + validator:
-
-- **Testnet minimum**: 2 vCPU, 8 GiB RAM, 120 GB SSD
-- **Testnet recommended**: 4 vCPU, 16 GiB RAM, 200+ GB SSD
-- **Production-like recommended**: separate DAS and validator hosts
-
-If you keep co-hosted in production-like environments, use at least:
-
-- 4 vCPU, 16 GiB RAM, 300+ GB SSD
+Production-like setups should run DAS and validator on **separate hosts**. If you keep them co-hosted in production, use at least 4 vCPU, 16 GiB RAM, and 300+ GB SSD.
 
 ## What You Provide
 
@@ -78,56 +123,60 @@ Required secret inputs:
 
 ## Quick Start
 
-1. Copy env templates:
+Complete [Install Host Software](#install-host-software-ubuntu) first.
+
+### 1. Clone this repository
+
+```bash
+git clone https://github.com/bless-net/committee-node.git
+cd committee-node
+```
+
+### 2. Create runtime env files
+
+Copy the example templates — do **not** edit the `.example` files in place:
 
 ```bash
 cp env/das.env.example env/das.env
 cp env/validator.env.example env/validator.env
 ```
 
-2. Edit env files and replace all `REPLACE_ME` values.
+Edit both files and replace every `REPLACE_ME` value with your Blessnet mainnet endpoints, contract addresses, and keys.
 
-3. Create required directories:
+You will also need a DAS BLS keypair on disk:
 
 ```bash
 mkdir -p bls_keys data validator-data
 chmod 700 bls_keys
+# place das_bls and das_bls.pub in bls_keys/ (provided separately)
+chmod 600 bls_keys/das_bls bls_keys/das_bls.pub
 ```
 
-4. Make scripts executable:
+### 3. Validate configuration
 
 ```bash
-chmod +x scripts/*.sh
-```
-
-5. Validate inputs and render config:
-
-```bash
-./scripts/validate-env.sh
-docker compose --env-file env/das.env --env-file env/validator.env config >/dev/null
-```
-
-Equivalent Makefile commands:
-
-```bash
+chmod +x scripts/*.sh checks/*.sh
 make validate
 make render
 ```
 
-6. Install/start:
+`make validate` runs `./scripts/validate-env.sh`. `make render` checks that Compose can render with your env files.
+
+### 4. Start the node
 
 ```bash
-./scripts/install.sh
+make install
 ```
 
-7. Run health checks:
+This pulls pinned images and starts `arbitrum-das` and `validator`.
+
+### 5. Run health checks
 
 ```bash
-./scripts/doctor.sh
+make doctor
 ```
 
-`doctor.sh` validates service health plus runtime validator flags. It does **not** prove on-chain fast-confirm movement.
-Use the proof check below for that.
+`doctor.sh` validates service health plus runtime validator flags. It does **not** prove on-chain fast-confirm movement — use [Prove Fast Confirmations](#prove-fast-confirmations) for that.
 
 ## Runtime Operations
 
