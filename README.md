@@ -418,15 +418,55 @@ This does **not** require Blessnet to provide stable Kubernetes egress IPs for f
 
 #### 8.1 Prerequisites
 
-- DNS `A`/`AAAA` record for this host (e.g. `das-member.example.com`)
+- DNS **A record** for this host (see below)
 - `make doctor` passing on localhost
 - Inbound **80** and **443** allowed (extend UFW and cloud firewall from step 2.4)
+
+##### DNS A record — what points where
+
+The A record is **not a URL**. It maps a **hostname** to this committee server’s **public IPv4 address** (the same IP you SSH to — `NODE_IP` from [step 1](#1-create-droplet-and-attach-block-storage-volumes)).
+
+| DNS field | Value |
+|-----------|--------|
+| **Type** | `A` |
+| **Name / host** | The subdomain you choose (e.g. `das-member` for `das-member.bless.net`) |
+| **Value / points to** | This droplet’s **public IP** — not `https://…`, not a path, just the IP |
+| **TTL** | Default is fine (e.g. 300–3600) |
+
+**Examples**
+
+| `DAS_DOMAIN` (in `env/das.network.env`) | A record name | Points to |
+|----------------------------------------|---------------|-----------|
+| `das-member.bless.net` (mainnet) | `das-member` in zone `bless.net` | `203.0.113.10` |
+| `das-member.test.bless.net` (testnet) | `das-member` in zone `test.bless.net` | `203.0.113.10` |
+
+Get this server’s public IP (on the droplet):
+
+```bash
+curl -4 -s ifconfig.me
+```
+
+Who creates the record depends on who hosts DNS for `bless.net` — often **Blessnet ops**, not the committee operator. Ask them to add the A record, or add it yourself if you control the zone.
+
+Set `DAS_DOMAIN` in `env/das.network.env` to the **full hostname** (must match the cert wildcard: `*.bless.net` or `*.test.bless.net`).
+
+Verify after DNS propagates (from your laptop or the droplet):
+
+```bash
+dig +short das-member.bless.net A
+# must print your droplet public IP
+
+curl -4 -s ifconfig.me   # on droplet — should match dig output
+```
+
+HTTPS URLs (`https://das-member.bless.net/rest`, etc.) come **after** nginx + TLS in step 8.4 — the A record only needs the IP.
 
 #### 8.2 Record exposure settings
 
 ```bash
 cp env/das.network.env.example env/das.network.env
 chmod 600 env/das.network.env
+make gen-das-rpc-secret-path
 ```
 
 Edit `env/das.network.env`:
@@ -434,7 +474,7 @@ Edit `env/das.network.env`:
 - `COMMITTEE_PROFILE` — `mainnet` or `testnet` (selects AWS wildcard secret names; see [tls-aws-secrets-manager.md](docs/tls-aws-secrets-manager.md))
 - `DAS_DOMAIN` — public DNS under the wildcard (`das-member.bless.net` or `das-member.test.bless.net`)
 - `DAS_TLS_CERT` / `DAS_TLS_KEY` — local PEM paths (filled by `make fetch-tls-aws` or manual install)
-- `DAS_RPC_SECRET_PATH` — generate once: `openssl rand -hex 16` (treat like a password; share RPC URL out-of-band only)
+- `DAS_RPC_SECRET_PATH` — set by `make gen-das-rpc-secret-path` (treat like a password; share RPC URL out-of-band only; use `--force` only with a keyset update)
 
 Confirm `env/das.env` keeps localhost binds:
 
@@ -476,19 +516,18 @@ sudo apt-get install -y nginx
 
 ##### Option A — AWS Secrets Manager (Blessnet wildcard cert, recommended)
 
-Same wildcard TLS secrets as rollup RPC ingress (`blessnet/<profile>/tls/wildcard-crt` and `wildcard-key`). On the droplet you use the **AWS CLI**, not Kubernetes External Secrets — full walkthrough: **[docs/tls-aws-secrets-manager.md](docs/tls-aws-secrets-manager.md)**.
+Follow **[docs/tls-aws-secrets-manager.md](docs/tls-aws-secrets-manager.md)** — numbered Steps 1–6. Summary:
 
-Prerequisite: AWS-side setup in rollup `docs/tls-certificate-strategy.md` (Steps 0–3). IAM access key on the droplet with `secretsmanager:GetSecretValue` on those secrets.
+1. Get an IAM access key from Blessnet ops (read access to the wildcard cert secrets).
+2. `aws configure` on the droplet (or `/etc/committee-node/aws-credentials.env`).
+3. Finish `env/das.network.env` from step 8.2 (`COMMITTEE_PROFILE`, `DAS_DOMAIN`).
+4. `make fetch-tls-aws` — downloads cert/key from AWS to `/etc/ssl/...`
+5. `make setup-nginx-das` — nginx HTTPS + reload
+6. `curl` checks in the doc
 
-In `env/das.network.env` set `COMMITTEE_PROFILE` (`mainnet` or `testnet`), `DAS_DOMAIN` under the wildcard (`*.bless.net` or `*.test.bless.net`), and `DAS_RPC_SECRET_PATH`.
+You do **not** run rollup §14.0 (ingress-nginx / External Secrets) on this host.
 
-```bash
-sudo apt-get install -y awscli
-make fetch-tls-aws      # writes DAS_TLS_CERT + DAS_TLS_KEY from Secrets Manager
-make setup-nginx-das    # nginx site + reload
-```
-
-After cert rotation in AWS, rerun `make fetch-tls-aws` and reload nginx.
+After cert rotation in AWS: `make fetch-tls-aws` and `sudo systemctl reload nginx`.
 
 ##### Option B — Certificate files you install manually
 

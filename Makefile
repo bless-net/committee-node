@@ -4,7 +4,7 @@ SHELL := /bin/bash
 ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 COMPOSE := docker compose --env-file env/das.env --env-file env/validator.env
 
-.PHONY: help validate render up down ps logs doctor install upgrade rollback smoke prove-fast-confirm fetch-tls-aws setup-nginx-das chmod-scripts
+.PHONY: help validate render up down ps logs doctor install upgrade rollback smoke prove-fast-confirm gen-das-rpc-secret-path fetch-tls-aws setup-nginx-das chmod-scripts
 
 help:
 	@echo "Committee node commands:"
@@ -20,6 +20,7 @@ help:
 	@echo "  make rollback      # rollback to latest backup"
 	@echo "  make smoke         # run smoke checks"
 	@echo "  make prove-fast-confirm # prove fast confirmations are moving"
+	@echo "  make gen-das-rpc-secret-path # generate DAS_RPC_SECRET_PATH in env/das.network.env"
 	@echo "  make fetch-tls-aws     # pull TLS PEMs from AWS Secrets Manager"
 	@echo "  make setup-nginx-das   # install nginx site from env/das.network.env"
 
@@ -62,6 +63,9 @@ smoke: chmod-scripts
 
 prove-fast-confirm: chmod-scripts
 	./checks/prove-fast-confirmation.sh
+
+gen-das-rpc-secret-path: chmod-scripts
+	./scripts/gen-das-rpc-secret-path.sh
 
 fetch-tls-aws: chmod-scripts
 	./scripts/fetch-tls-from-aws.sh
