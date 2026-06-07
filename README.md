@@ -9,125 +9,355 @@ A committee node runs both:
 
 Production-like setups may split DAS and validator across separate hosts using the same deployment.
 
-## Host Prerequisites
+## Host Requirements
 
-Recommended host baseline (co-hosted DAS + validator):
+Use a fresh **Ubuntu 22.04 or 24.04** host (these instructions target Ubuntu on DigitalOcean; other providers work if you supply equivalent storage).
 
-- Ubuntu 22.04+ (or equivalent modern Linux)
-- Docker Engine 24+
-- Docker Compose v2 plugin
-- `bash`, `curl`, `jq`, `make`
+Minimum hardware for co-hosted DAS + validator:
 
-Quick checks:
+- **Recommended**: 4 vCPU, 16 GiB RAM
+- **Minimum**: 2 vCPU, 8 GiB RAM
+
+Storage (Blessnet mainnet starting points):
+
+| Path | Purpose | Where it lives | Size |
+|------|---------|----------------|------|
+| `data/` | DAS cache and file storage | Block volume → `/mnt/das-data` | 50–100 GB |
+| `validator-data/` | Nitro validator chain DB | Block volume → `/mnt/validator-data` | 100–200 GB |
+| `bls_keys/` | DAS BLS keypair (sensitive) | Droplet root disk | negligible |
+
+The droplet root disk only needs room for the OS, Docker, and this git checkout — **not** for chain data. Attach two separate Block Storage volumes at droplet creation (see [Setup](#setup-follow-in-order)).
+
+Required software (installed in [step 4](#4-install-host-software)):
+
+| Package | Purpose |
+|---------|---------|
+| Docker Engine 24+ | Runs DAS and validator containers |
+| Docker Compose v2 plugin | `docker compose` commands used by this repo |
+| `git` | Clone this repository |
+| `curl`, `jq`, `make` | Health checks and Makefile targets |
+| `bash` | Install/upgrade scripts |
+
+Production-like setups should run DAS and validator on **separate hosts**. If you keep them co-hosted in production, use at least 4 vCPU and 16 GiB RAM with both volumes above attached.
+
+All day-to-day work runs as a **non-root operator user** with `sudo`. Root is only for initial bootstrap (steps 2.1–2.3).
+
+## Setup (follow in order)
+
+Work through these steps on a **new** server before running any committee-node containers.
+
+Set these on your **local machine** before you start (used throughout):
 
 ```bash
-docker --version
-docker compose version
-jq --version
-make --version
+export NODE_IP=<droplet-public-ip>
+export ADMIN_SSH_KEY=~/.ssh/id_ed25519    # your admin private key
+export OP_USER=<your-username>            # non-root operator, e.g. omnus
 ```
 
-## Storage Layout
+### 1. Create droplet and attach Block Storage volumes
 
-The deployment expects this on the host:
+In the [DigitalOcean control panel](https://cloud.digitalocean.com/droplets/new):
 
-```text
-committee-node/
-  bls_keys/         # DAS BLS keypair (sensitive)
-    das_bls
-    das_bls.pub
-  data/             # DAS local cache/file storage
-  validator-data/   # Nitro validator DB/state
+1. **Create → Droplets**
+2. **Image:** Ubuntu LTS (22.04 or 24.04)
+3. **Size:** at least 4 vCPU / 16 GiB RAM recommended (minimum 2 vCPU / 8 GiB RAM)
+4. **Region:** same region as your other Blessnet infrastructure (e.g. `nyc3`)
+5. **Add block storage volumes** (same region — attach them now, not later):
+   - `blessnet-das-data` — 50–100 GB
+   - `blessnet-validator-data` — 100–200 GB
+6. **Authentication:** SSH keys only — add your admin public key; **do not** enable root password login
+7. **Firewall (recommended):** create or attach a cloud firewall that allows **inbound SSH (`22/tcp`) only from your admin IP or VPN CIDR**
+8. **Hostname:** `blessnet-mainnet-committee-node` (or `blessnet-testnet-committee-node` for testnet)
+9. **Create the droplet** and set `NODE_IP` to its public IP
+
+Alternatively, with [`doctl`](https://docs.digitalocean.com/reference/doctl/) (replace region, size, and SSH key fingerprint):
+
+```bash
+doctl compute droplet create blessnet-mainnet-committee-node \
+  --region nyc3 \
+  --size s-4vcpu-16gb \
+  --image ubuntu-24-04-x64 \
+  --ssh-keys <your-ssh-key-fingerprint>
+
+doctl compute volume create blessnet-das-data --region nyc3 --size 100GiB
+doctl compute volume create blessnet-validator-data --region nyc3 --size 200GiB
+doctl compute volume attach blessnet-das-data <droplet-id>
+doctl compute volume attach blessnet-validator-data <droplet-id>
 ```
 
-Recommended mount strategy:
+### 2. Bootstrap access and harden the host
 
-- Keep `committee-node/` on a dedicated data disk (not tiny root disk), or
-- Bind `data/` and `validator-data/` to dedicated volumes.
+#### 2.1 First login (root, key-only)
 
-Suggested sizing (starting points):
+```bash
+ssh -i "$ADMIN_SSH_KEY" root@"${NODE_IP}"
+```
 
-- `data/` (DAS): 20-50 GB testnet, larger for long retention
-- `validator-data/`: 50-100 GB testnet, larger for long-lived networks
+Keep this root session open until **step 2.3** validates operator login in a second terminal.
 
-## Minimum Specs
+#### 2.2 Create a non-root operator user (required)
 
-For co-hosted DAS + validator:
+Run **once as `root`**:
 
-- **Testnet minimum**: 2 vCPU, 8 GiB RAM, 120 GB SSD
-- **Testnet recommended**: 4 vCPU, 16 GiB RAM, 200+ GB SSD
-- **Production-like recommended**: separate DAS and validator hosts
+```bash
+export OP_USER="${OP_USER:-omnus}"
+adduser "$OP_USER"
+usermod -aG sudo "$OP_USER"
 
-If you keep co-hosted in production-like environments, use at least:
+install -d -m 700 "/home/$OP_USER/.ssh"
+cp /root/.ssh/authorized_keys "/home/$OP_USER/.ssh/authorized_keys"
+chown -R "$OP_USER:$OP_USER" "/home/$OP_USER/.ssh"
+chmod 600 "/home/$OP_USER/.ssh/authorized_keys"
+```
 
-- 4 vCPU, 16 GiB RAM, 300+ GB SSD
+Validate in a **second terminal** before changing SSH settings (leave the root session open):
 
-## What You Provide
+```bash
+ssh -i "$ADMIN_SSH_KEY" "${OP_USER}@${NODE_IP}"
+whoami    # expect: your OP_USER
+sudo -v   # expect: succeeds
+groups    # expect: includes sudo
+exit
+```
 
-Fill values in:
+If validation succeeds, **return to your original `root` session** for step 2.3. Keep that root session open until step 2.3 confirms operator login still works — then close root and use `"$OP_USER"` from step 2.4 onward.
 
-- `env/das.env`
-- `env/validator.env`
+#### 2.3 Harden SSH (required — disable root login and password auth)
 
-from the example templates in `env/*.example`.
+Run as **`root`** (still in your original session) **only after** step 2.2 validation succeeds:
 
-Required secret inputs:
+```bash
+cp /etc/ssh/sshd_config "/etc/ssh/sshd_config.bak.$(date +%Y%m%d%H%M%S)"
 
-- DAS BLS keypair (`./bls_keys/das_bls`, `./bls_keys/das_bls.pub`)
-- validator private key (`VALIDATOR_PRIVATE_KEY`)
+# Key-only auth; no root SSH
+sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
 
-## Quick Start
+if grep -q '^#\?PubkeyAuthentication' /etc/ssh/sshd_config; then
+  sed -i 's/^#\?PubkeyAuthentication .*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+else
+  echo 'PubkeyAuthentication yes' >> /etc/ssh/sshd_config
+fi
 
-1. Copy env templates:
+sshd -t
+systemctl reload ssh
+```
+
+Confirm operator login still works in another terminal:
+
+```bash
+ssh -i "$ADMIN_SSH_KEY" "${OP_USER}@${NODE_IP}"
+```
+
+Then **close the root session**. Do all further work as `"$OP_USER"`.
+
+If you lock yourself out, use the DigitalOcean Droplet **Recovery Console** to fix `sshd_config` or temporarily re-enable access.
+
+#### 2.4 Host hardening (automatic updates, fail2ban, firewall)
+
+Run as your **operator user** with `sudo`:
+
+```bash
+ssh -i "$ADMIN_SSH_KEY" "${OP_USER}@${NODE_IP}"
+
+# Automatic security updates
+sudo apt update
+sudo apt install -y unattended-upgrades apt-listchanges
+sudo dpkg-reconfigure -plow unattended-upgrades
+
+# fail2ban (edit jail.local, not jail.conf)
+sudo apt install -y fail2ban
+sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+sudo systemctl enable --now fail2ban
+```
+
+Add or update the `[sshd]` block in `/etc/fail2ban/jail.local` (`sudo nano /etc/fail2ban/jail.local`):
+
+```ini
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1
+banaction = ufw
+backend = systemd
+
+[sshd]
+enabled = true
+port = ssh
+logpath = %(sshd_log)s
+maxretry = 5
+bantime = 1h
+findtime = 10m
+```
+
+Add your admin IP or VPN CIDR to `ignoreip` so you do not ban yourself.
+
+```bash
+sudo fail2ban-client reload
+sudo fail2ban-client status sshd
+
+# UFW — allow SSH before enabling
+sudo ufw allow OpenSSH
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw enable
+sudo ufw status verbose
+```
+
+Committee-node services bind RPC to `127.0.0.1` by default (`env/*.example`), so inbound access beyond SSH is not required on this host.
+
+### 3. Format and mount volumes
+
+NOT REQUIRED IF FORMATTED AND MOUNTED AT CREATION (e.g. through digital ocean)
+
+As your **operator user**, format and mount the block volumes attached in step 1. Do this before installing Docker or cloning this repo.
+
+```bash
+lsblk -f
+```
+
+Format each volume once (use the `/dev/disk/by-id/scsi-0DO_Volume_*` paths from `lsblk` — do **not** format the root filesystem disk):
+
+```bash
+DAS_DEV=/dev/disk/by-id/scsi-0DO_Volume_blessnet-das-data
+VALIDATOR_DEV=/dev/disk/by-id/scsi-0DO_Volume_blessnet-validator-data
+
+sudo mkfs.ext4 -F "$DAS_DEV"
+sudo mkfs.ext4 -F "$VALIDATOR_DEV"
+
+sudo mkdir -p /mnt/das-data /mnt/validator-data
+```
+
+Add persistent mounts (replace UUIDs with output from `sudo blkid`):
+
+```bash
+sudo tee -a /etc/fstab <<'EOF'
+UUID=<das-data-uuid>       /mnt/das-data       ext4 defaults,nofail,discard 0 2
+UUID=<validator-data-uuid> /mnt/validator-data ext4 defaults,nofail,discard 0 2
+EOF
+
+sudo mount -a
+df -h /mnt/das-data /mnt/validator-data
+```
+
+Both mount points should show the expected volume sizes and be empty.
+
+### 4. Install host software
+
+Still as your **operator user**:
+
+```bash
+sudo apt-get update
+sudo apt-get upgrade -y
+sudo apt-get install -y ca-certificates curl git jq make
+```
+
+Install Docker Engine and the Compose plugin from Docker's official apt repository (not the older `docker.io` package):
+
+```bash
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "${VERSION_CODENAME}") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"
+```
+
+Log out and back in (or run `newgrp docker`), then verify:
+
+```bash
+docker --version          # expect 24.x or newer
+docker compose version    # expect Compose v2.x
+docker run --rm hello-world
+```
+
+### 5. Clone the repository and wire storage
+
+`compose.yaml` bind-mounts `./data` and `./validator-data`. Point those at the volumes mounted in step 3:
+
+```bash
+git clone https://github.com/bless-net/committee-node.git
+cd committee-node
+
+# Replace with the mount points you used in step 3 (must exist before linking)
+export DAS_MOUNT=/mnt/REPLACE_WITH_DAS_MOUNT
+export VALIDATOR_MOUNT=/mnt/REPLACE_WITH_VALIDATOR_MOUNT
+
+if [[ ! -d "$DAS_MOUNT" || ! -d "$VALIDATOR_MOUNT" ]]; then
+  echo "Mount paths missing — set DAS_MOUNT and VALIDATOR_MOUNT to your step 3 paths"
+else
+  ln -s "$DAS_MOUNT" data
+  ln -s "$VALIDATOR_MOUNT" validator-data
+  ls -la data validator-data
+fi
+```
+
+Example (if you mounted at the suggested paths in step 3):
+
+```bash
+export DAS_MOUNT=/mnt/das-data
+export VALIDATOR_MOUNT=/mnt/validator-data
+ln -s "$DAS_MOUNT" data
+ln -s "$VALIDATOR_MOUNT" validator-data
+```
+
+`bls_keys/` is already in the clone (for your BLS keypair in step 6). It stays on the droplet root disk — small and sensitive; back it up separately from the bulk data volumes.
+
+### 6. Configure environment and keys
+
+Copy the example templates — do **not** edit the `.example` files in place:
 
 ```bash
 cp env/das.env.example env/das.env
 cp env/validator.env.example env/validator.env
 ```
 
-2. Edit env files and replace all `REPLACE_ME` values.
+Edit both files and replace every `REPLACE_ME` value with your Blessnet mainnet endpoints, contract addresses, and keys.
 
-3. Create required directories:
+Set the validator private key as `VALIDATOR_PRIVATE_KEY` in `env/validator.env` (committee member key — not the same as the BLS key).
+
+#### Generate the DAS BLS keypair
+
+Each committee member needs a unique BLS keypair for the DAS to sign data-availability certificates. Generate it with Nitro's `datool` using the same pinned image as `DAS_IMAGE` in `env/das.env`:
 
 ```bash
-mkdir -p bls_keys data validator-data
+set -a
+source env/das.env
+set +a
+
+docker run --rm -v "$(pwd)/bls_keys:/data/keys" --entrypoint datool \
+  "$DAS_IMAGE" keygen --dir /data/keys
+
 chmod 700 bls_keys
+chmod 600 bls_keys/das_bls bls_keys/das_bls.pub
+ls -la bls_keys/das_bls bls_keys/das_bls.pub
 ```
 
-4. Make scripts executable:
+This creates `./bls_keys/das_bls` (private) and `./bls_keys/das_bls.pub` (public). **Back up the private key securely** — treat it like any other signing key.
+
+If the files already exist, skip `keygen` and only run the `chmod` lines.
+
+Before your DAS can serve on the committee, the **base64-encoded public key** from `das_bls.pub` must be registered in the chain's DAC keyset (on-chain `SequencerInbox` keyset update). That step is done outside this repo as part of Blessnet chain/DAC operations — coordinate with whoever manages the rollup deployment.
+
+### 7. Start and verify
 
 ```bash
-chmod +x scripts/*.sh
-```
-
-5. Validate inputs and render config:
-
-```bash
-./scripts/validate-env.sh
-docker compose --env-file env/das.env --env-file env/validator.env config >/dev/null
-```
-
-Equivalent Makefile commands:
-
-```bash
+chmod +x scripts/*.sh checks/*.sh
 make validate
 make render
+make install
+make doctor
 ```
 
-6. Install/start:
+`make install` pulls pinned images and starts `arbitrum-das` and `validator`. `make doctor` checks service health and runtime validator flags — it does **not** prove on-chain fast-confirm movement; use [Prove Fast Confirmations](#prove-fast-confirmations) for that.
 
-```bash
-./scripts/install.sh
-```
+### Non-DigitalOcean hosts
 
-7. Run health checks:
-
-```bash
-./scripts/doctor.sh
-```
-
-`doctor.sh` validates service health plus runtime validator flags. It does **not** prove on-chain fast-confirm movement.
-Use the proof check below for that.
+If you are not on DigitalOcean, follow the same bootstrap and hardening pattern (steps 2.1–2.4), provision two separate disks with the sizes above, then complete [step 3](#3-format-and-mount-volumes) before continuing.
 
 ## Runtime Operations
 
