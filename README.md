@@ -259,7 +259,7 @@ Verify the **mount directories themselves** (not the symlinks — `ls -ld data` 
 ls -ld "$DAS_MOUNT" "$VALIDATOR_MOUNT"
 ```
 
-Both must show owner **`1000`**, not `root`. If they still show `root`, containers will not start.
+Both must show owner **`1000`** (or the user name associated with this user), not `root`. If they still show `root`, containers will not start.
 
 ### 4. Install host software
 
@@ -270,6 +270,8 @@ sudo apt-get update
 sudo apt-get upgrade -y
 sudo apt-get install -y ca-certificates curl git jq make
 ```
+
+Keep the local version of your ssh config.
 
 Install Docker Engine and the Compose plugin from Docker's official apt repository (not the older `docker.io` package):
 
@@ -407,6 +409,32 @@ Makefile equivalents:
 make upgrade
 make rollback
 make doctor
+make ps      # service status
+make logs    # tail both services (last 200 lines, follow)
+```
+
+### Check logs
+
+From the repo root:
+
+```bash
+# both services (follow)
+make logs
+
+# last N lines without following
+docker compose --env-file env/das.env --env-file env/validator.env logs --tail=100
+
+# one service
+docker compose --env-file env/das.env --env-file env/validator.env logs arbitrum-das --tail=100 -f
+docker compose --env-file env/das.env --env-file env/validator.env logs validator --tail=100 -f
+```
+
+If a container is crash-looping and `compose logs` is empty or slow, read the container directly:
+
+```bash
+docker logs arbitrum-das --tail=100
+docker logs orbit-validator --tail=100
+docker logs orbit-validator --tail=100 -f   # follow
 ```
 
 ## Prove Fast Confirmations
