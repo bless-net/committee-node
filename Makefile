@@ -1,4 +1,4 @@
-SHELL := /usr/bin/env bash
+SHELL := /bin/bash
 .ONESHELL:
 
 ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
