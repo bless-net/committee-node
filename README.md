@@ -202,7 +202,7 @@ sudo ufw enable
 sudo ufw status verbose
 ```
 
-Committee-node services bind RPC to `127.0.0.1` by default (`env/*.example`), so inbound access beyond SSH is not required on this host.
+DAS and validator RPC bind to `127.0.0.1` by default (`env/*.example`). That is enough for a local `make doctor` run. **Committee membership requires exposing DAS to the network** — see [step 8](#8-expose-das-endpoints-committee-networking).
 
 ### 3. Format and mount volumes
 
@@ -367,7 +367,12 @@ This creates `./bls_keys/das_bls` (private) and `./bls_keys/das_bls.pub` (public
 
 If the files already exist, skip `keygen` and only run the `chmod` lines.
 
-Before your DAS can serve on the committee, the **base64-encoded public key** from `das_bls.pub` must be registered in the chain's DAC keyset (on-chain `SequencerInbox` keyset update). That step is done outside this repo as part of Blessnet chain/DAC operations — coordinate with whoever manages the rollup deployment.
+Before your DAS can serve on the committee, hand Blessnet (for on-chain `SequencerInbox` keyset update):
+
+- **base64-encoded public key** from `das_bls.pub`
+- **DAS RPC URL** and **DAS REST URL** from [step 8](#8-expose-das-endpoints-committee-networking)
+
+That keyset update is done outside this repo — coordinate with whoever manages the rollup deployment.
 
 #### Set container data permissions (required before first start)
 
@@ -393,6 +398,107 @@ make doctor
 ```
 
 `make install` pulls pinned images and starts `arbitrum-das` and `validator`. `make doctor` checks service health and runtime validator flags — it does **not** prove on-chain fast-confirm movement; use [Prove Fast Confirmations](#prove-fast-confirmations) for that.
+
+### 8. Expose DAS endpoints (committee networking)
+
+`make doctor` only hits `127.0.0.1`. To participate in the DAC, other infrastructure must reach your DAS:
+
+| Endpoint | Port | Who needs it | Exposure |
+|----------|------|--------------|----------|
+| **DAS RPC** | `9876` | Sequencer / batch poster | Inbound from **sequencer IP only** |
+| **DAS REST** | `9877` | Nitro nodes fetching batch data | Inbound (broader); use a **secret path prefix** so scanners cannot hit `/health` |
+
+The validator talks to DAS REST internally (`http://arbitrum-das:9877` in Docker). This step is for **external** callers registered in the DAC keyset.
+
+#### 8.1 Network env and secret REST prefix
+
+```bash
+cp env/das.network.env.example env/das.network.env
+```
+
+Edit `env/das.network.env`:
+
+- `NODE_PUBLIC_IP` — droplet public IP (`curl -4 -s ifconfig.me`)
+- `SEQUENCER_IP` — source IP (or CIDR) of the Blessnet sequencer / batch poster
+- `DAS_REST_PATH_PREFIX` — generate once: `openssl rand -hex 16` (treat like a password; Blessnet registers the full REST URL)
+
+#### 8.2 Expose DAS RPC (sequencer only)
+
+In `env/das.env`, set:
+
+```bash
+DAS_RPC_BIND=0.0.0.0
+```
+
+Keep `DAS_REST_BIND=127.0.0.1` (REST is exposed via Caddy below, not directly).
+
+Restart:
+
+```bash
+make down && make up
+```
+
+Allow RPC only from the sequencer:
+
+```bash
+set -a
+source env/das.network.env
+set +a
+
+sudo ufw allow from "$SEQUENCER_IP" to any port 9876 proto tcp comment 'DAS RPC (sequencer)'
+```
+
+Also allow `9876/tcp` from `$SEQUENCER_IP` in your **cloud firewall** (DigitalOcean, etc.) if you use one.
+
+#### 8.3 Expose DAS REST via Caddy (secret path)
+
+Install [Caddy](https://caddyserver.com/docs/install#debian-ubuntu-raspbian) on the host, then validate and run the example config:
+
+```bash
+sudo caddy validate --config config/Caddyfile.example --envfile env/das.network.env
+sudo caddy run    --config config/Caddyfile.example --envfile env/das.network.env
+```
+
+For production, run Caddy as a systemd service instead of foreground `caddy run`.
+
+`config/Caddyfile.example` listens on `:9877` and only forwards requests under `/<DAS_REST_PATH_PREFIX>/` to `127.0.0.1:9877`. Anything else returns `404`.
+
+Open REST in the firewall:
+
+```bash
+sudo ufw allow 9877/tcp comment 'DAS REST (Caddy)'
+```
+
+#### 8.4 URLs to hand Blessnet
+
+```bash
+set -a
+source env/das.network.env
+set +a
+
+echo "DAS RPC URL:  http://${NODE_PUBLIC_IP}:9876"
+echo "DAS REST URL: http://${NODE_PUBLIC_IP}:9877/${DAS_REST_PATH_PREFIX}/"
+```
+
+- **RPC** — plain `http://IP:9876` is fine; access control is the firewall allowlist.
+- **REST** — the secret prefix **is** the URL you register. Do not rotate it without coordinating a keyset update.
+
+#### 8.5 Verify from outside the host
+
+From your laptop (not over SSH to the droplet):
+
+```bash
+# REST — should return HTTP 200
+curl -sSI "http://${NODE_PUBLIC_IP}:9877/${DAS_REST_PATH_PREFIX}/health"
+
+# REST — wrong prefix should 404
+curl -sSI "http://${NODE_PUBLIC_IP}:9877/health"
+
+# RPC — should return JSON (only works from an allowlisted IP)
+curl -sS -X POST "http://${NODE_PUBLIC_IP}:9876" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":0,"method":"das_healthCheck","params":[]}'
+```
 
 ### Non-DigitalOcean hosts
 
