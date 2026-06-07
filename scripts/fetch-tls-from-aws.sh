@@ -15,6 +15,14 @@ set -a
 source "$NETWORK_ENV"
 set +a
 
+AWS_CREDENTIALS_FILE="${AWS_CREDENTIALS_FILE:-/etc/committee-node/aws-credentials.env}"
+if [[ -f "$AWS_CREDENTIALS_FILE" ]]; then
+  # shellcheck disable=SC1090
+  set -a
+  source "$AWS_CREDENTIALS_FILE"
+  set +a
+fi
+
 AWS_REGION="${AWS_REGION:-us-east-1}"
 
 if [[ -n "${COMMITTEE_PROFILE:-}" ]]; then
@@ -42,13 +50,24 @@ for var in DAS_TLS_CERT DAS_TLS_KEY AWS_TLS_CRT_SECRET AWS_TLS_KEY_SECRET; do
 done
 
 if ! command -v aws >/dev/null 2>&1; then
-  echo "aws CLI not found — install awscli on this host"
+  echo "aws CLI not found — install: sudo apt-get install -y awscli"
+  exit 1
+fi
+
+aws_args=()
+if [[ -n "${AWS_PROFILE:-}" ]]; then
+  aws_args+=(--profile "$AWS_PROFILE")
+fi
+
+if ! aws "${aws_args[@]}" sts get-caller-identity --region "$AWS_REGION" >/dev/null 2>&1; then
+  echo "AWS credentials not configured or not authorized."
+  echo "See docs/tls-aws-secrets-manager.md — Step 2 (aws configure or /etc/committee-node/aws-credentials.env)"
   exit 1
 fi
 
 fetch_secret() {
   local secret_id="$1"
-  aws secretsmanager get-secret-value \
+  aws "${aws_args[@]}" secretsmanager get-secret-value \
     --region "$AWS_REGION" \
     --secret-id "$secret_id" \
     --query SecretString \
