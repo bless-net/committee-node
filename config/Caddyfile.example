@@ -1,3 +1,6 @@
+# DEPRECATED — use nginx per README step 8 (`nginx/arbitrum-das.conf.example`).
+# Kept for reference only.
+#
 # Public REST on :9877 with a secret path prefix.
 # DAS itself stays on 127.0.0.1:9877 (default compose bind).
 #
