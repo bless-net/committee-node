@@ -431,7 +431,9 @@ chmod 600 env/das.network.env
 
 Edit `env/das.network.env`:
 
-- `DAS_DOMAIN` — public DNS name pointing at this droplet
+- `COMMITTEE_PROFILE` — `mainnet` or `testnet` (selects AWS wildcard secret names; see [tls-aws-secrets-manager.md](docs/tls-aws-secrets-manager.md))
+- `DAS_DOMAIN` — public DNS under the wildcard (`das-member.bless.net` or `das-member.test.bless.net`)
+- `DAS_TLS_CERT` / `DAS_TLS_KEY` — local PEM paths (filled by `make fetch-tls-aws` or manual install)
 - `DAS_RPC_SECRET_PATH` — generate once: `openssl rand -hex 16` (treat like a password; share RPC URL out-of-band only)
 
 Confirm `env/das.env` keeps localhost binds:
@@ -463,27 +465,52 @@ nc -vz das-member.example.com 9876   # should fail
 nc -vz das-member.example.com 9877   # should fail
 ```
 
-#### 8.4 Install nginx and TLS
+#### 8.4 nginx and TLS
+
+Install nginx if it is not already on the host:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y nginx certbot python3-certbot-nginx
-
-set -a
-source env/das.network.env
-set +a
-
-sudo cp nginx/arbitrum-das.conf.example /etc/nginx/sites-available/arbitrum-das.conf
-sudo sed -i "s/DAS_DOMAIN/$DAS_DOMAIN/g" /etc/nginx/sites-available/arbitrum-das.conf
-sudo sed -i "s/DAS_RPC_SECRET_PATH/$DAS_RPC_SECRET_PATH/g" /etc/nginx/sites-available/arbitrum-das.conf
-sudo ln -sf /etc/nginx/sites-available/arbitrum-das.conf /etc/nginx/sites-enabled/arbitrum-das.conf
-sudo nginx -t
-sudo systemctl reload nginx
-
-sudo certbot --nginx -d "$DAS_DOMAIN"
+sudo apt-get install -y nginx
 ```
 
-For production, enable nginx and certbot renewal via systemd (not a foreground shell).
+##### Option A — AWS Secrets Manager (Blessnet wildcard cert, recommended)
+
+Same wildcard TLS secrets as rollup RPC ingress (`blessnet/<profile>/tls/wildcard-crt` and `wildcard-key`). On the droplet you use the **AWS CLI**, not Kubernetes External Secrets — full walkthrough: **[docs/tls-aws-secrets-manager.md](docs/tls-aws-secrets-manager.md)**.
+
+Prerequisite: AWS-side setup in rollup `docs/tls-certificate-strategy.md` (Steps 0–3). IAM access key on the droplet with `secretsmanager:GetSecretValue` on those secrets.
+
+In `env/das.network.env` set `COMMITTEE_PROFILE` (`mainnet` or `testnet`), `DAS_DOMAIN` under the wildcard (`*.bless.net` or `*.test.bless.net`), and `DAS_RPC_SECRET_PATH`.
+
+```bash
+sudo apt-get install -y awscli
+make fetch-tls-aws      # writes DAS_TLS_CERT + DAS_TLS_KEY from Secrets Manager
+make setup-nginx-das    # nginx site + reload
+```
+
+After cert rotation in AWS, rerun `make fetch-tls-aws` and reload nginx.
+
+##### Option B — Certificate files you install manually
+
+```bash
+sudo install -d -m 755 /etc/ssl/certs /etc/ssl/private
+sudo install -m 644 /path/from/you/fullchain.pem /etc/ssl/certs/das-fullchain.pem
+sudo install -m 600 /path/from/you/privkey.pem   /etc/ssl/private/das-privkey.pem
+make setup-nginx-das
+```
+
+##### Option C — Let's Encrypt
+
+```bash
+sudo apt-get install -y certbot python3-certbot-nginx
+set -a && source env/das.network.env && set +a
+sudo certbot certonly --nginx -d "$DAS_DOMAIN"
+# DAS_TLS_CERT=/etc/letsencrypt/live/$DAS_DOMAIN/fullchain.pem
+# DAS_TLS_KEY=/etc/letsencrypt/live/$DAS_DOMAIN/privkey.pem
+make setup-nginx-das
+```
+
+**Already using nginx for this subdomain?** Do not add a second `server` block. Copy the `location` blocks from `nginx/arbitrum-das.locations.example` into your existing `server { listen 443 ssl; server_name <DAS_DOMAIN>; ... }`. Substitute `DAS_RPC_SECRET_PATH`, then `sudo nginx -t && sudo systemctl reload nginx`.
 
 #### 8.5 URLs to hand Blessnet
 
