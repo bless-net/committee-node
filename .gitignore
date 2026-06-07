@@ -3,6 +3,7 @@
 
 # Runtime secrets (copy from env/*.example)
 env/das.env
+env/das.network.env
 env/validator.env
 
 # DAS BLS keypair (generate or install locally)

@@ -1,0 +1,16 @@
+# Public REST on :9877 with a secret path prefix.
+# DAS itself stays on 127.0.0.1:9877 (default compose bind).
+#
+# Install Caddy, then from repo root:
+#   sudo caddy validate --config config/Caddyfile --envfile env/das.network.env
+#   sudo caddy run    --config config/Caddyfile --envfile env/das.network.env
+#
+# Registered REST URL (hand to Blessnet):
+#   http://<NODE_PUBLIC_IP>:9877/<DAS_REST_PATH_PREFIX>/
+
+:9877 {
+	handle_path /{$DAS_REST_PATH_PREFIX}/* {
+		reverse_proxy 127.0.0.1:9877
+	}
+	respond "Not found" 404
+}
