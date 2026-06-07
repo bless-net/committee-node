@@ -240,6 +240,27 @@ df -h /mnt/das-data /mnt/validator-data
 
 Both mount points should show the expected volume sizes and be empty.
 
+#### Set volume ownership (required)
+
+DigitalOcean block volumes mount as **`root:root`**. The Nitro containers run as UID **`1000`** (`user` in the image). If you skip this step, DAS and validator will crash with permission errors.
+
+Use your **actual mount paths** (the paths you will use for `DAS_MOUNT` / `VALIDATOR_MOUNT` in step 5 — not the `data/` symlinks):
+
+```bash
+export DAS_MOUNT=/mnt/REPLACE_WITH_DAS_MOUNT
+export VALIDATOR_MOUNT=/mnt/REPLACE_WITH_VALIDATOR_MOUNT
+
+sudo chown -R 1000:1000 "$DAS_MOUNT" "$VALIDATOR_MOUNT"
+```
+
+Verify the **mount directories themselves** (not the symlinks — `ls -ld data` is not enough):
+
+```bash
+ls -ld "$DAS_MOUNT" "$VALIDATOR_MOUNT"
+```
+
+Both must show owner **`1000`**, not `root`. If they still show `root`, containers will not start.
+
 ### 4. Install host software
 
 Still as your **operator user**:
@@ -307,6 +328,8 @@ ln -s "$VALIDATOR_MOUNT" validator-data
 
 `bls_keys/` is already in the clone (for your BLS keypair in step 6). It stays on the droplet root disk — small and sensitive; back it up separately from the bulk data volumes.
 
+The `data/` and `validator-data/` symlinks point at your mount paths — ownership must be set on those targets in [Set volume ownership](#set-volume-ownership-required). After symlinking, confirm with `ls -ld "$DAS_MOUNT" "$VALIDATOR_MOUNT"`, not `ls -ld data` alone.
+
 ### 6. Configure environment and keys
 
 Copy the example templates — do **not** edit the `.example` files in place:
@@ -318,7 +341,7 @@ cp env/validator.env.example env/validator.env
 
 Edit both files and replace every `REPLACE_ME` value with your Blessnet mainnet endpoints, contract addresses, and keys.
 
-Set the validator private key as `VALIDATOR_PRIVATE_KEY` in `env/validator.env` (committee member key — not the same as the BLS key).
+Set the validator private key as `VALIDATOR_PRIVATE_KEY` in `env/validator.env` — **64 hex characters, no `0x` prefix** (committee member key — not the same as the BLS key).
 
 #### Generate the DAS BLS keypair
 
@@ -332,6 +355,7 @@ set +a
 docker run --rm -v "$(pwd)/bls_keys:/data/keys" --entrypoint datool \
   "$DAS_IMAGE" keygen --dir /data/keys
 
+sudo chown -R 1000:1000 bls_keys
 chmod 700 bls_keys
 chmod 600 bls_keys/das_bls bls_keys/das_bls.pub
 ls -la bls_keys/das_bls bls_keys/das_bls.pub
@@ -342,6 +366,19 @@ This creates `./bls_keys/das_bls` (private) and `./bls_keys/das_bls.pub` (public
 If the files already exist, skip `keygen` and only run the `chmod` lines.
 
 Before your DAS can serve on the committee, the **base64-encoded public key** from `das_bls.pub` must be registered in the chain's DAC keyset (on-chain `SequencerInbox` keyset update). That step is done outside this repo as part of Blessnet chain/DAC operations — coordinate with whoever manages the rollup deployment.
+
+#### Set container data permissions (required before first start)
+
+Nitro containers run as UID **`1000`**. Re-apply ownership before starting — especially after `keygen`, which writes keys as your login user.
+
+**Use your mount paths and `bls_keys/` directly** — `chown -R data` does not reliably update symlink targets:
+
+```bash
+sudo chown -R 1000:1000 "$DAS_MOUNT" "$VALIDATOR_MOUNT" bls_keys
+ls -ld "$DAS_MOUNT" "$VALIDATOR_MOUNT" bls_keys
+```
+
+All three must show owner **`1000`**, not `root` or your login user.
 
 ### 7. Start and verify
 

@@ -40,8 +40,8 @@ for v in "${required_vars[@]}"; do
   fi
 done
 
-if [[ "$VALIDATOR_PRIVATE_KEY" != 0x* ]]; then
-  echo "VALIDATOR_PRIVATE_KEY must start with 0x"
+if [[ ! "$VALIDATOR_PRIVATE_KEY" =~ ^(0x)?[0-9a-fA-F]{64}$ ]]; then
+  echo "VALIDATOR_PRIVATE_KEY must be 64 hex characters (optional 0x prefix; Nitro expects no 0x in compose)"
   exit 1
 fi
 
