@@ -206,6 +206,8 @@ Committee-node services bind RPC to `127.0.0.1` by default (`env/*.example`), so
 
 ### 3. Format and mount volumes
 
+NOT REQUIRED IF FORMATTED AND MOUNTED AT CREATION (e.g. through digital ocean)
+
 As your **operator user**, format and mount the block volumes attached in step 1. Do this before installing Docker or cloning this repo.
 
 ```bash
@@ -280,13 +282,30 @@ docker run --rm hello-world
 ```bash
 git clone https://github.com/bless-net/committee-node.git
 cd committee-node
-mkdir -p bls_keys
-ln -s /mnt/das-data data
-ln -s /mnt/validator-data validator-data
-ls -la data validator-data    # should resolve to /mnt/*
+
+# Replace with the mount points you used in step 3 (must exist before linking)
+export DAS_MOUNT=/mnt/REPLACE_WITH_DAS_MOUNT
+export VALIDATOR_MOUNT=/mnt/REPLACE_WITH_VALIDATOR_MOUNT
+
+if [[ ! -d "$DAS_MOUNT" || ! -d "$VALIDATOR_MOUNT" ]]; then
+  echo "Mount paths missing — set DAS_MOUNT and VALIDATOR_MOUNT to your step 3 paths"
+else
+  ln -s "$DAS_MOUNT" data
+  ln -s "$VALIDATOR_MOUNT" validator-data
+  ls -la data validator-data
+fi
 ```
 
-`bls_keys/` stays on the droplet root disk — it is small and sensitive; back it up separately from the bulk data volumes.
+Example (if you mounted at the suggested paths in step 3):
+
+```bash
+export DAS_MOUNT=/mnt/das-data
+export VALIDATOR_MOUNT=/mnt/validator-data
+ln -s "$DAS_MOUNT" data
+ln -s "$VALIDATOR_MOUNT" validator-data
+```
+
+`bls_keys/` is already in the clone (for your BLS keypair in step 6). It stays on the droplet root disk — small and sensitive; back it up separately from the bulk data volumes.
 
 ### 6. Configure environment and keys
 
@@ -299,17 +318,30 @@ cp env/validator.env.example env/validator.env
 
 Edit both files and replace every `REPLACE_ME` value with your Blessnet mainnet endpoints, contract addresses, and keys.
 
-You must also provide:
+Set the validator private key as `VALIDATOR_PRIVATE_KEY` in `env/validator.env` (committee member key — not the same as the BLS key).
 
-- DAS BLS keypair at `./bls_keys/das_bls` and `./bls_keys/das_bls.pub`
-- validator private key as `VALIDATOR_PRIVATE_KEY` in `env/validator.env`
+#### Generate the DAS BLS keypair
 
-Set key permissions:
+Each committee member needs a unique BLS keypair for the DAS to sign data-availability certificates. Generate it with Nitro's `datool` using the same pinned image as `DAS_IMAGE` in `env/das.env`:
 
 ```bash
+set -a
+source env/das.env
+set +a
+
+docker run --rm -v "$(pwd)/bls_keys:/data/keys" --entrypoint datool \
+  "$DAS_IMAGE" keygen --dir /data/keys
+
 chmod 700 bls_keys
 chmod 600 bls_keys/das_bls bls_keys/das_bls.pub
+ls -la bls_keys/das_bls bls_keys/das_bls.pub
 ```
+
+This creates `./bls_keys/das_bls` (private) and `./bls_keys/das_bls.pub` (public). **Back up the private key securely** — treat it like any other signing key.
+
+If the files already exist, skip `keygen` and only run the `chmod` lines.
+
+Before your DAS can serve on the committee, the **base64-encoded public key** from `das_bls.pub` must be registered in the chain's DAC keyset (on-chain `SequencerInbox` keyset update). That step is done outside this repo as part of Blessnet chain/DAC operations — coordinate with whoever manages the rollup deployment.
 
 ### 7. Start and verify
 
