@@ -26,6 +26,7 @@ required_vars=(
   PARENT_CHAIN_RPC
   PARENT_CHAIN_BEACON_RPC
   SEQUENCER_INBOX_ADDRESS
+  DAS_REST_AGGREGATOR_URLS
   CHAIN_INFO_JSON
   SEQUENCER_FEED_URL
   SEQUENCER_FORWARDING_TARGET
@@ -62,6 +63,16 @@ fi
 
 if [[ "$PARENT_CHAIN_RPC" == *"REPLACE_ME"* || "$PARENT_CHAIN_BEACON_RPC" == *"REPLACE_ME"* ]]; then
   echo "RPC URLs still contain REPLACE_ME placeholders"
+  exit 1
+fi
+
+if [[ "$DAS_REST_AGGREGATOR_URLS" == *"REPLACE_ME"* ]]; then
+  echo "DAS_REST_AGGREGATOR_URLS still contains REPLACE_ME — set sibling committee REST URLs (README step 6)"
+  exit 1
+fi
+
+if [[ "$DAS_REST_AGGREGATOR_URLS" != *"/rest"* ]]; then
+  echo "DAS_REST_AGGREGATOR_URLS entries should be public REST bases ending in /rest (README step 9)"
   exit 1
 fi
 

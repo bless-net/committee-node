@@ -32,6 +32,9 @@ services:
       - --data-availability.local-file-storage.enable
       - --data-availability.local-file-storage.data-dir
       - /home/user/data/das-data
+      - --data-availability.rest-aggregator.enable
+      - --data-availability.rest-aggregator.urls
+      - ${DAS_REST_AGGREGATOR_URLS:?missing DAS_REST_AGGREGATOR_URLS}
     deploy:
       resources:
         limits:

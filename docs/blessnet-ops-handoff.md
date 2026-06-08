@@ -99,7 +99,25 @@ Committee operator needs these **from** Blessnet (not the other way around):
 
 These are independent of DAS exposure.
 
-### 4. Change management (required for production)
+### 4. Sibling REST URLs for peer backfill (required)
+
+Each committee operator needs the **public REST base URLs of every other committee member** (not their own) for `DAS_REST_AGGREGATOR_URLS` in `env/das.env` ([README step 9](../README.md#9-das-peer-backfill)).
+
+Provide a comma-separated list, e.g.:
+
+```text
+https://das-alpha.test.bless.net/rest,https://das-beta.test.bless.net/rest
+```
+
+Update this list when members join or leave. Committee operators update `env/das.env` and recreate `arbitrum-das` — **no on-chain change**.
+
+#### Request to send Blessnet ops (sibling REST URLs)
+
+```
+Please send the public REST base URLs (https://<host>/rest) of all other <testnet|mainnet> committee members, for our DAS peer backfill config (DAS_REST_AGGREGATOR_URLS). Exclude our own URL: https://<our-DAS_DOMAIN>/rest
+```
+
+### 5. Change management (required for production)
 
 Blessnet ops should notify committee operators **before**:
 
@@ -129,7 +147,7 @@ Do not leave `9876` open to `0.0.0.0/0` in production.
 
 ## Copy-paste: handoff after step 8
 
-Fill in and send after nginx + certbot are running:
+Fill in and send after nginx + TLS are running (README step 8):
 
 ```
 Subject: Committee member DAS endpoints — keyset registration
@@ -163,11 +181,15 @@ Committee operator contact: <name / signal>
 | REST 200 locally on `:9877`, fails on HTTPS | nginx misconfigured; UFW/cloud firewall blocks 443 |
 | Batches not stored after keyset update | Wrong RPC URL in keyset; BLS key mismatch; RPC secret path rotated without keyset update |
 | RPC works from laptop, not from Blessnet | Wrong URL registered; Blessnet still using old keyset; TLS trust issue on cluster |
+| Validator `Couldn't fetch DAS batch contents` loop | Missing/wrong `DAS_REST_AGGREGATOR_URLS`; sibling also missing hash — see [das-peer-backfill.md](das-peer-backfill.md) |
 
 ---
 
 ## Related docs
 
-- [README step 8](../README.md#8-expose-das-endpoints-committee-networking) — droplet configuration
+- [README step 8](../README.md#8-expose-das-endpoints-committee-networking) — droplet networking
+- [README step 9](../README.md#9-das-peer-backfill) — DAS peer backfill
+- [README upgrade path](../README.md#upgrading-existing-committee-nodes-peer-backfill) — existing servers
+- [das-peer-backfill.md](das-peer-backfill.md) — aggregator details
 - [Arbitrum: deploy a DAS](https://docs.arbitrum.io/launch-arbitrum-chain/configure-your-chain/common/data-availability/data-availability-committees/deploy-das)
 - [Arbitrum: configure the DAC](https://docs.arbitrum.io/launch-arbitrum-chain/configure-your-chain/common/data-availability/data-availability-committees/configure-dac)

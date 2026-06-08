@@ -30,6 +30,7 @@ jobs:
           CHAIN_NAME=Blessnet
           PARENT_CHAIN_RPC=https://example.invalid/rpc
           SEQUENCER_INBOX_ADDRESS=0x1111111111111111111111111111111111111111
+          DAS_REST_AGGREGATOR_URLS=https://das-peer1.example.invalid/rest,https://das-peer2.example.invalid/rest
           DAS_RPC_BIND=127.0.0.1
           DAS_REST_BIND=127.0.0.1
           DAS_CPU_LIMIT=1.0
