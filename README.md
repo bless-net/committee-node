@@ -471,10 +471,11 @@ make gen-das-rpc-secret-path
 
 Edit `env/das.network.env`:
 
-- `COMMITTEE_PROFILE` — `mainnet` or `testnet` (selects AWS wildcard secret names; see [tls-aws-secrets-manager.md](docs/tls-aws-secrets-manager.md))
+- `COMMITTEE_PROFILE` — `mainnet` or `testnet` (picks AWS wildcard secret names when you run `make fetch-tls-aws`; do not set `AWS_TLS_*` in this file)
 - `DAS_DOMAIN` — public DNS under the wildcard (`das-member.bless.net` or `das-member.test.bless.net`)
-- `DAS_TLS_CERT` / `DAS_TLS_KEY` — local PEM paths (filled by `make fetch-tls-aws` or manual install)
+- `DAS_TLS_CERT` / `DAS_TLS_KEY` — local PEM paths (defaults are fine; filled by `make fetch-tls-aws` or manual install)
 - `DAS_RPC_SECRET_PATH` — set by `make gen-das-rpc-secret-path` (treat like a password; share RPC URL out-of-band only; use `--force` only with a keyset update)
+- `AWS_PROFILE` — optional, only if you used a named `aws configure` profile
 
 Confirm `env/das.env` keeps localhost binds:
 
@@ -516,18 +517,16 @@ sudo apt-get install -y nginx
 
 ##### Option A — AWS Secrets Manager (Blessnet wildcard cert, recommended)
 
-Follow **[docs/tls-aws-secrets-manager.md](docs/tls-aws-secrets-manager.md)** — numbered Steps 1–6. Summary:
+Complete **§8.2** first, then AWS-only steps in **[docs/tls-aws-secrets-manager.md](docs/tls-aws-secrets-manager.md)**:
 
-1. Get an IAM access key from Blessnet ops (read access to the wildcard cert secrets).
-2. `aws configure` on the droplet (or `/etc/committee-node/aws-credentials.env`).
-3. Finish `env/das.network.env` from step 8.2 (`COMMITTEE_PROFILE`, `DAS_DOMAIN`).
-4. `make fetch-tls-aws` — downloads cert/key from AWS to `/etc/ssl/...`
-5. `make setup-nginx-das` — nginx HTTPS + reload
-6. `curl` checks in the doc
+```bash
+make install-aws-cli    # Ubuntu 24.04 — no apt awscli package
+aws configure           # IAM key from Blessnet ops; region us-east-1
+make fetch-tls-aws
+make setup-nginx-das
+```
 
-You do **not** run rollup §14.0 (ingress-nginx / External Secrets) on this host.
-
-After cert rotation in AWS: `make fetch-tls-aws` and `sudo systemctl reload nginx`.
+You do **not** run rollup §14.0 (ingress-nginx / External Secrets) on this host. After cert rotation: `make fetch-tls-aws` and `sudo systemctl reload nginx`.
 
 ##### Option B — Certificate files you install manually
 
