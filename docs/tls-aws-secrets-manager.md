@@ -1,218 +1,115 @@
 # TLS from AWS Secrets Manager (committee droplet)
 
+Supplement to **[README step 8](../README.md#8-expose-das-endpoints-committee-networking)** — AWS credentials and `make fetch-tls-aws` only. DNS, `env/das.network.env`, firewall, nginx install, URL handoff, and HTTPS checks are all in the README.
+
 ## What you are doing
 
-Blessnet keeps a **wildcard TLS certificate** in AWS Secrets Manager. Your droplet downloads that cert, saves it as two local files, and nginx uses those files for HTTPS on `DAS_DOMAIN`.
-
-**You run two make targets:**
+Blessnet stores a wildcard TLS cert in AWS Secrets Manager. On the droplet:
 
 ```bash
-make fetch-tls-aws    # download cert + key from AWS → /etc/ssl/...
-make setup-nginx-das  # configure nginx to use those files
+make fetch-tls-aws    # download cert + key → DAS_TLS_CERT / DAS_TLS_KEY
+make setup-nginx-das  # README step 8.4 — nginx uses those files
 ```
 
-That is the entire AWS integration on a committee node.
+`COMMITTEE_PROFILE` in `env/das.network.env` (set in [README §8.2](../README.md#82-record-exposure-settings)) picks which secrets to read — do **not** set `AWS_TLS_CRT_SECRET` / `AWS_TLS_KEY_SECRET` in the env file.
+
+| Profile | Secrets Manager paths |
+|---------|----------------------|
+| `mainnet` | `blessnet/mainnet/tls/wildcard-crt` + `wildcard-key` |
+| `testnet` | `blessnet/testnet/tls/wildcard-crt` + `wildcard-key` |
+
+Region: **`us-east-1`** (`AWS_REGION` in `env/das.network.env`).
 
 ---
 
 ## What you do **not** do on the droplet
 
-Rollup README **§14.0** (ingress-nginx, External Secrets Operator, `kubectl apply -f k8s/tls/…`) is **Kubernetes only**. Ignore it on the committee host.
+Rollup README **§14.0** (ingress-nginx, External Secrets Operator, `kubectl apply -f k8s/tls/…`) is **Kubernetes only**.
 
 | Rollup (k8s) | Committee droplet |
 |--------------|-------------------|
 | ESO syncs secrets into the cluster | `make fetch-tls-aws` |
 | Ingress uses a `TLS` secret | nginx uses `DAS_TLS_CERT` / `DAS_TLS_KEY` files |
 
-Same secrets in AWS; different sync path.
-
 ---
 
 ## Before you start
 
-1. **`make doctor` passes** on the droplet.
-2. **DNS A record** — a hostname for this server points at the droplet’s **public IP** (not a URL):
-   - **Type:** `A`
-   - **Name:** e.g. `das-member` → full name `das-member.bless.net` (mainnet) or `das-member.test.bless.net` (testnet)
-   - **Value:** this droplet’s public IPv4 (`curl -4 -s ifconfig.me` on the server — same IP you use for SSH)
-   - Set `DAS_DOMAIN` in `env/das.network.env` to that full hostname
-   - Verify: `dig +short $DAS_DOMAIN A` returns the droplet IP
-   - Usually created by whoever manages the `bless.net` DNS zone (ask Blessnet ops if you do not control it)
-3. **AWS access** — ask whoever runs Blessnet AWS to give you an **IAM access key** that can read the two TLS secrets for your profile (mainnet or testnet). You need:
-   - `AWS_ACCESS_KEY_ID`
-   - `AWS_SECRET_ACCESS_KEY`
+1. Complete README **§8.1–8.3** (DNS A record, `env/das.network.env`, firewall).
+2. Get an **IAM access key** from Blessnet ops with `secretsmanager:GetSecretValue` on the two TLS secrets for your profile (see [request template](#request-to-send-blessnet-ops-aws-access) below).
 
-If the wildcard cert is not in Secrets Manager yet, that team does rollup `docs/tls-certificate-strategy.md` (Steps 0–3) first. You only wait for the key — you do not run those steps on the droplet.
+If the wildcard is not in Secrets Manager yet, Blessnet does rollup `docs/tls-certificate-strategy.md` (Steps 0–3) first.
 
 ---
 
-## Step-by-step (on the committee droplet)
+## 1 — Install AWS CLI
 
-All commands from the **committee-node repo root** unless noted.
-
-### Step 1 — Install tools
-
-Ubuntu 24.04 does **not** ship `awscli` in apt. Use the repo installer for **AWS CLI v2**:
+Ubuntu 24.04 has no `awscli` apt package:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y nginx
 make install-aws-cli
 aws --version   # expect aws-cli/2.x
 ```
 
-### Step 2 — Store AWS credentials on the host
+(Install `nginx` in [README §8.4](../README.md#84-nginx-and-tls) if not already installed.)
 
-Pick **one** method.
+---
 
-**Method A — `aws configure` (simplest for a single operator)**
+## 2 — Store AWS credentials on the host
+
+**Method A — `aws configure`**
 
 ```bash
 aws configure
-# AWS Access Key ID:     <paste from Blessnet ops>
-# AWS Secret Access Key: <paste from Blessnet ops>
-# Default region name: us-east-1
-# Default output format: json
-```
+# Access Key ID, Secret Access Key, region us-east-1
 
-Test:
-
-```bash
 aws sts get-caller-identity
 ```
 
-**Method B — credentials file (good for automation)**
+**Method B — file** (loaded automatically by `fetch-tls-from-aws.sh`)
 
 ```bash
 sudo install -d -m 700 /etc/committee-node
-sudo tee /etc/committee-node/aws-credentials.env >/dev/null <<'EOF'
-AWS_ACCESS_KEY_ID=REPLACE_ME
-AWS_SECRET_ACCESS_KEY=REPLACE_ME
-AWS_REGION=us-east-1
-EOF
+sudo nano /etc/committee-node/aws-credentials.env   # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
 sudo chmod 600 /etc/committee-node/aws-credentials.env
-# sudo nano /etc/committee-node/aws-credentials.env   # paste real values
 ```
 
-`fetch-tls-from-aws.sh` loads `/etc/committee-node/aws-credentials.env` automatically when present.
+If you used `aws configure --profile blessnet-committee`, add `AWS_PROFILE=blessnet-committee` to `env/das.network.env`.
 
-Test:
+---
 
-```bash
-set -a && source /etc/committee-node/aws-credentials.env && set +a
-aws sts get-caller-identity
-```
-
-### Step 3 — Create `env/das.network.env`
-
-```bash
-cp env/das.network.env.example env/das.network.env
-chmod 600 env/das.network.env
-make gen-das-rpc-secret-path
-```
-
-Edit `env/das.network.env`. **Minimum required edits:**
-
-```bash
-nano env/das.network.env
-```
-
-| Variable | What to set |
-|----------|-------------|
-| `COMMITTEE_PROFILE` | `mainnet` or `testnet` |
-| `DAS_DOMAIN` | Your hostname, e.g. `das-member.bless.net` |
-| `DAS_RPC_SECRET_PATH` | Already set by `make gen-das-rpc-secret-path` |
-
-Leave these as-is unless you have a reason to change them:
-
-```bash
-DAS_TLS_CERT=/etc/ssl/certs/das-fullchain.pem
-DAS_TLS_KEY=/etc/ssl/private/das-privkey.pem
-AWS_REGION=us-east-1
-```
-
-With `COMMITTEE_PROFILE=mainnet`, the script reads:
-
-- `blessnet/mainnet/tls/wildcard-crt`
-- `blessnet/mainnet/tls/wildcard-key`
-
-With `COMMITTEE_PROFILE=testnet`, it reads the `testnet` paths instead. You do not need to type the secret names unless you override them.
-
-Optional: if you used `aws configure --profile blessnet-committee`, add:
-
-```bash
-AWS_PROFILE=blessnet-committee
-```
-
-### Step 4 — Download the cert from AWS
+## 3 — Download the cert
 
 ```bash
 make fetch-tls-aws
 ```
 
-**Expected output:** paths to `/etc/ssl/certs/das-fullchain.pem` and `/etc/ssl/private/das-privkey.pem`, plus certificate subject and expiry dates.
-
-**If this fails:**
+Expected: writes `/etc/ssl/certs/das-fullchain.pem` and `/etc/ssl/private/das-privkey.pem`, prints cert dates.
 
 | Error | Fix |
 |-------|-----|
-| `Unable to locate credentials` | Complete Step 2 |
-| `AccessDeniedException` | Ask Blessnet ops to fix IAM permissions on the two secrets |
-| `ResourceNotFoundException` | Wrong `COMMITTEE_PROFILE` or secrets not created yet in AWS |
-| `aws CLI not found` | `make install-aws-cli` (not `apt install awscli` on Ubuntu 24.04) |
+| `Unable to locate credentials` | §2 above |
+| `AccessDeniedException` | Wrong profile vs IAM user (e.g. testnet user + mainnet secrets), or ask ops for policy fix |
+| `ResourceNotFoundException` | Secrets not created yet, or wrong `COMMITTEE_PROFILE` |
+| Fetches `mainnet` paths on a testnet host | Remove any `AWS_TLS_CRT_SECRET` / `AWS_TLS_KEY_SECRET` lines from `env/das.network.env`; rely on `COMMITTEE_PROFILE` only |
 
-Manual check (optional):
+---
 
-```bash
-set -a && source env/das.network.env && set +a
-aws secretsmanager get-secret-value \
-  --region "$AWS_REGION" \
-  --secret-id "$AWS_TLS_CRT_SECRET" \
-  --query SecretString --output text | head -1
-# should print: -----BEGIN CERTIFICATE-----
-```
-
-### Step 5 — Configure nginx
+## 4 — Continue in the README
 
 ```bash
-make setup-nginx-das
+make setup-nginx-das          # §8.4
+# verify + hand URLs          # §8.5–8.6
 ```
 
-**Expected output:** `nginx -t` succeeds, nginx reloads, prints your REST and RPC URLs.
+---
 
-### Step 6 — Verify HTTPS
-
-```bash
-set -a && source env/das.network.env && set +a
-
-curl -I "https://${DAS_DOMAIN}/rest/health"
-
-curl -sS -X POST "https://${DAS_DOMAIN}/rpc/${DAS_RPC_SECRET_PATH}" \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc":"2.0","id":0,"method":"das_healthCheck","params":[]}'
-```
-
-Both should succeed. Continue with [README step 8.5](../README.md#85-urls-to-hand-blessnet) to hand URLs to Blessnet.
-
-### Step 7 — After cert rotation in AWS
-
-Blessnet ops rotates the wildcard in Secrets Manager from time to time. When they tell you (or on a schedule):
+## After cert rotation
 
 ```bash
 make fetch-tls-aws
 sudo nginx -t && sudo systemctl reload nginx
 ```
-
----
-
-## Quick reference — secret names
-
-| Profile | Hostname example | Cert secret | Key secret |
-|---------|------------------|-------------|------------|
-| mainnet | `das-member.bless.net` | `blessnet/mainnet/tls/wildcard-crt` | `blessnet/mainnet/tls/wildcard-key` |
-| testnet | `das-member.test.bless.net` | `blessnet/testnet/tls/wildcard-crt` | `blessnet/testnet/tls/wildcard-key` |
-
-Region: **`us-east-1`** (change `AWS_REGION` only if Blessnet ops says the secrets live elsewhere).
 
 ---
 
@@ -222,20 +119,19 @@ Region: **`us-east-1`** (change `AWS_REGION` only if Blessnet ops says the secre
 We are setting up a committee node and need to pull the wildcard TLS cert from AWS Secrets Manager (same secrets as rollup RPC ingress).
 
 Please provide:
-1) IAM access key (Access Key ID + Secret Access Key) with secretsmanager:GetSecretValue on:
+1) IAM access key with secretsmanager:GetSecretValue on:
    - blessnet/<mainnet|testnet>/tls/wildcard-crt
    - blessnet/<mainnet|testnet>/tls/wildcard-key
    Region: us-east-1
 
 2) Confirm the wildcard is already in Secrets Manager (or tell us when it will be).
 
-We will run `make fetch-tls-aws` on the droplet — we do not need ESO or kubectl access.
+We run `make fetch-tls-aws` on the droplet — we do not need ESO or kubectl access.
 ```
 
 ---
 
-## Background (optional reading)
+## Background
 
-- Rollup cert strategy and rotation: rollup repo `docs/tls-certificate-strategy.md`
-- Rollup k8s TLS sync: rollup README §14.0 (not run on committee droplet)
-- Manual cert / Let's Encrypt instead of AWS: [README step 8.4](../README.md#84-nginx-and-tls) options B and C
+- Rollup cert strategy / rotation: rollup `docs/tls-certificate-strategy.md`
+- Manual cert or Let's Encrypt: [README §8.4](../README.md#84-nginx-and-tls) options B and C
