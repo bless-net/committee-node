@@ -50,7 +50,7 @@ for var in DAS_TLS_CERT DAS_TLS_KEY AWS_TLS_CRT_SECRET AWS_TLS_KEY_SECRET; do
 done
 
 if ! command -v aws >/dev/null 2>&1; then
-  echo "aws CLI not found — install: sudo apt-get install -y awscli"
+  echo "aws CLI not found — install: ./scripts/install-aws-cli.sh  (or: make install-aws-cli)"
   exit 1
 fi
 

@@ -4,7 +4,7 @@ SHELL := /bin/bash
 ROOT := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 COMPOSE := docker compose --env-file env/das.env --env-file env/validator.env
 
-.PHONY: help validate render up down ps logs doctor install upgrade rollback smoke prove-fast-confirm gen-das-rpc-secret-path fetch-tls-aws setup-nginx-das chmod-scripts
+.PHONY: help validate render up down ps logs doctor install upgrade rollback smoke prove-fast-confirm gen-das-rpc-secret-path install-aws-cli fetch-tls-aws setup-nginx-das chmod-scripts
 
 help:
 	@echo "Committee node commands:"
@@ -21,6 +21,7 @@ help:
 	@echo "  make smoke         # run smoke checks"
 	@echo "  make prove-fast-confirm # prove fast confirmations are moving"
 	@echo "  make gen-das-rpc-secret-path # generate DAS_RPC_SECRET_PATH in env/das.network.env"
+	@echo "  make install-aws-cli   # AWS CLI v2 (Ubuntu 24.04 has no awscli apt pkg)"
 	@echo "  make fetch-tls-aws     # pull TLS PEMs from AWS Secrets Manager"
 	@echo "  make setup-nginx-das   # install nginx site from env/das.network.env"
 
@@ -66,6 +67,9 @@ prove-fast-confirm: chmod-scripts
 
 gen-das-rpc-secret-path: chmod-scripts
 	./scripts/gen-das-rpc-secret-path.sh
+
+install-aws-cli: chmod-scripts
+	./scripts/install-aws-cli.sh
 
 fetch-tls-aws: chmod-scripts
 	./scripts/fetch-tls-from-aws.sh
