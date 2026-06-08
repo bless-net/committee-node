@@ -28,26 +28,32 @@ AWS_REGION="${AWS_REGION:-us-east-1}"
 if [[ -n "${COMMITTEE_PROFILE:-}" ]]; then
   case "$COMMITTEE_PROFILE" in
     mainnet)
-      AWS_TLS_CRT_SECRET="${AWS_TLS_CRT_SECRET:-blessnet/mainnet/tls/wildcard-crt}"
-      AWS_TLS_KEY_SECRET="${AWS_TLS_KEY_SECRET:-blessnet/mainnet/tls/wildcard-key}"
+      AWS_TLS_CRT_SECRET=blessnet/mainnet/tls/wildcard-crt
+      AWS_TLS_KEY_SECRET=blessnet/mainnet/tls/wildcard-key
       ;;
     testnet)
-      AWS_TLS_CRT_SECRET="${AWS_TLS_CRT_SECRET:-blessnet/testnet/tls/wildcard-crt}"
-      AWS_TLS_KEY_SECRET="${AWS_TLS_KEY_SECRET:-blessnet/testnet/tls/wildcard-key}"
+      AWS_TLS_CRT_SECRET=blessnet/testnet/tls/wildcard-crt
+      AWS_TLS_KEY_SECRET=blessnet/testnet/tls/wildcard-key
       ;;
     *)
       echo "COMMITTEE_PROFILE must be mainnet or testnet (got: $COMMITTEE_PROFILE)"
       exit 1
       ;;
   esac
+elif [[ -z "${AWS_TLS_CRT_SECRET:-}" || -z "${AWS_TLS_KEY_SECRET:-}" ]]; then
+  echo "Set COMMITTEE_PROFILE=mainnet|testnet or set AWS_TLS_CRT_SECRET and AWS_TLS_KEY_SECRET in env/das.network.env"
+  exit 1
 fi
 
-for var in DAS_TLS_CERT DAS_TLS_KEY AWS_TLS_CRT_SECRET AWS_TLS_KEY_SECRET; do
+for var in DAS_TLS_CERT DAS_TLS_KEY; do
   if [[ -z "${!var:-}" || "${!var}" == REPLACE_ME* ]]; then
-    echo "Set $var in env/das.network.env (or set COMMITTEE_PROFILE=mainnet|testnet)"
+    echo "Set $var in env/das.network.env"
     exit 1
   fi
 done
+
+echo "COMMITTEE_PROFILE=${COMMITTEE_PROFILE:-<unset, using AWS_TLS_* from env>}"
+echo "Fetching TLS secrets for profile (region $AWS_REGION)..."
 
 if ! command -v aws >/dev/null 2>&1; then
   echo "aws CLI not found — install: ./scripts/install-aws-cli.sh  (or: make install-aws-cli)"
