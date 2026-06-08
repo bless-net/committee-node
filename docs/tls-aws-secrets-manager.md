@@ -35,7 +35,7 @@ Rollup README **§14.0** (ingress-nginx, External Secrets Operator, `kubectl app
 
 ## Before you start
 
-1. Complete README **§8.1–8.3** (DNS A record, `env/das.network.env`, firewall).
+1. Complete README **§8.1–8.3** (DNS A record, `env/das.network.env`, firewall). Peer backfill is **§9** (`DAS_REST_AGGREGATOR_URLS` in `env/das.env`).
 2. Get an **IAM access key** from Blessnet ops with `secretsmanager:GetSecretValue` on the two TLS secrets for your profile (see [request template](#request-to-send-blessnet-ops-aws-access) below).
 
 If the wildcard is not in Secrets Manager yet, Blessnet does rollup `docs/tls-certificate-strategy.md` (Steps 0–3) first.

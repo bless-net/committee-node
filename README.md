@@ -341,9 +341,23 @@ cp env/das.env.example env/das.env
 cp env/validator.env.example env/validator.env
 ```
 
-Edit both files and replace every `REPLACE_ME` value with your Blessnet mainnet endpoints, contract addresses, and keys.
+Edit both files and replace every `REPLACE_ME` value with your Blessnet endpoints, contract addresses, and keys.
 
-Set the validator private key as `VALIDATOR_PRIVATE_KEY` in `env/validator.env` — **64 hex characters, no `0x` prefix** (committee member key — not the same as the BLS key).
+**`env/validator.env` (required)**
+
+| Variable | Source |
+|----------|--------|
+| `CHAIN_NAME` | Must match `"chain-name"` inside `CHAIN_INFO_JSON` exactly (e.g. `Blessnet`) |
+| `CHAIN_INFO_JSON` | **Full** Orbit chain info JSON from Blessnet deploy output — not just `chain-id` / `parent-chain-id`. A minimal stub causes `unsupported chain name` at validator start. |
+| `VALIDATOR_PRIVATE_KEY` | Committee staker key — **64 hex characters, no `0x` prefix** |
+| Other `REPLACE_ME` fields | Blessnet RPC, feed, forwarding target, etc. |
+
+**`env/das.env` (required)**
+
+| Variable | Source |
+|----------|--------|
+| `DAS_REST_AGGREGATOR_URLS` | Comma-separated **sibling** committee REST bases from Blessnet ops (each ends with `/rest`). See [step 9](#9-das-peer-backfill). |
+| `PARENT_CHAIN_RPC`, `SEQUENCER_INBOX_ADDRESS` | Blessnet parent-chain values |
 
 #### Generate the DAS BLS keypair
 
@@ -367,12 +381,10 @@ This creates `./bls_keys/das_bls` (private) and `./bls_keys/das_bls.pub` (public
 
 If the files already exist, skip `keygen` and only run the `chmod` lines.
 
-Before your DAS can serve on the committee, hand Blessnet (for on-chain `SequencerInbox` keyset update):
+Before your DAS can serve on the committee, coordinate with Blessnet ops ([handoff doc](docs/blessnet-ops-handoff.md)):
 
-- **base64-encoded public key** from `das_bls.pub`
-- **DAS RPC URL** and **DAS REST URL** from [step 8](#8-expose-das-endpoints-committee-networking)
-
-That keyset update is done outside this repo — use [docs/blessnet-ops-handoff.md](docs/blessnet-ops-handoff.md) for what to send Blessnet ops and the connectivity test plan.
+- **Request:** full `CHAIN_INFO_JSON`, sibling `DAS_REST_AGGREGATOR_URLS` list, IAM key for TLS (if using AWS)
+- **After step 8:** BLS public key, DAS RPC URL, DAS REST URL for keyset registration
 
 #### Set container data permissions (required before first start)
 
@@ -387,6 +399,15 @@ ls -ld "$DAS_MOUNT" "$VALIDATOR_MOUNT" bls_keys
 
 All three must show owner **`1000`**, not `root` or your login user.
 
+### Setup order (steps 6–9)
+
+| Step | What |
+|------|------|
+| **6** | `env/das.env`, `env/validator.env`, BLS keys — include `DAS_REST_AGGREGATOR_URLS` and full `CHAIN_INFO_JSON` |
+| **7** | `make install` + `make doctor` (local health) |
+| **8** | nginx + TLS; hand RPC/REST URLs to Blessnet for keyset |
+| **9** | Confirm peer backfill if validator hits DAS 404s on inbox (upgrade path if you deployed before step 9 existed) |
+
 ### 7. Start and verify
 
 ```bash
@@ -398,6 +419,8 @@ make doctor
 ```
 
 `make install` pulls pinned images and starts `arbitrum-das` and `validator`. `make doctor` checks service health and runtime validator flags — it does **not** prove on-chain fast-confirm movement; use [Prove Fast Confirmations](#prove-fast-confirmations) for that.
+
+If the validator later logs `Couldn't fetch DAS batch contents`, complete [step 9](#9-das-peer-backfill) (or the [upgrade section](#upgrading-existing-committee-nodes-peer-backfill) for nodes deployed before peer backfill was documented).
 
 ### 8. Expose DAS endpoints (committee networking)
 
@@ -606,6 +629,104 @@ Both should succeed. If RPC fails, confirm `make doctor` passes before debugging
 - Prefer **VPN or mTLS** for RPC if your committee policy requires stronger controls than a secret URL.
 - Do not open `9876`/`9877` to `0.0.0.0/0` and rely on IP allowlists of Blessnet cluster node egress — those IPs are not stable on default Kubernetes without a NAT gateway.
 
+### 9. DAS peer backfill
+
+If the chain already has batches before you join, or your DAS missed stores, the validator will log `Couldn't fetch DAS batch contents` / `Unable to find data` for inbox hashes. Configure **peer backfill** so your DAS can fetch missing batches from siblings and store them locally.
+
+Details: [docs/das-peer-backfill.md](docs/das-peer-backfill.md).
+
+#### 9.1 Get sibling REST URLs from Blessnet ops
+
+Ask for every **other** committee member's public REST base on your profile, for example:
+
+```text
+https://das-alpha.test.bless.net/rest
+https://das-beta.test.bless.net/rest
+```
+
+Do **not** include your own URL. Use the [handoff template](docs/blessnet-ops-handoff.md#request-to-send-blessnet-ops-sibling-rest-urls).
+
+#### 9.2 Configure `env/das.env`
+
+```bash
+# Comma-separated, no spaces — sibling HTTPS bases ending in /rest
+DAS_REST_AGGREGATOR_URLS=https://das-alpha.test.bless.net/rest,https://das-beta.test.bless.net/rest
+```
+
+`compose.yaml` enables `daserver` REST aggregator with this list. No on-chain change.
+
+#### 9.3 Apply and verify
+
+```bash
+make validate
+docker compose --env-file env/das.env --env-file env/validator.env up -d arbitrum-das
+# or: make down && make up
+```
+
+Confirm aggregator URLs are in the running container:
+
+```bash
+docker inspect arbitrum-das --format '{{json .Args}}' | tr ',' '\n' | grep -A1 rest-aggregator.urls
+```
+
+Watch backfill while the validator catches up:
+
+```bash
+docker logs orbit-validator -f 2>&1 | grep -iE 'fetch DAS|reading inbox'
+docker logs arbitrum-das -f 2>&1 | grep -iE 'get-by-hash|Unable to find'
+```
+
+404 loops on the **same hash** should stop once a sibling has the batch. If a sibling also returns 404, escalate to Blessnet ops (data may not exist on the DAC).
+
+Optional: test one hash manually:
+
+```bash
+curl -I "https://<sibling>/rest/get-by-hash/<hash-from-validator-log>"
+```
+
+---
+
+## Upgrading existing committee nodes (peer backfill)
+
+For servers that already completed steps 1–8 (doctor passes, nginx/TLS live, keyset registered) but the validator is stuck on DAS 404s:
+
+1. **Pull latest repo** on the droplet:
+
+   ```bash
+   cd ~/committee-node
+   git pull
+   ```
+
+2. **Get sibling REST URLs** from Blessnet ops (same as [step 9.1](#91-get-sibling-rest-urls-from-blessnet-ops)).
+
+3. **Edit `env/das.env`** — add or update:
+
+   ```bash
+   DAS_REST_AGGREGATOR_URLS=https://das-alpha.test.bless.net/rest,https://das-beta.test.bless.net/rest
+   ```
+
+   Remove any stale `AWS_TLS_CRT_SECRET` / `AWS_TLS_KEY_SECRET` lines if present; rely on `COMMITTEE_PROFILE` only (see [tls-aws-secrets-manager.md](docs/tls-aws-secrets-manager.md)).
+
+4. **Validate and recreate DAS** (validator can keep running; recreating both is also fine):
+
+   ```bash
+   make validate
+   docker compose --env-file env/das.env --env-file env/validator.env up -d --force-recreate arbitrum-das
+   ```
+
+5. **Verify** ([step 9.3](#93-apply-and-verify)) — validator should progress past previously stuck inbox batches.
+
+6. **No nginx or keyset changes** required for peer backfill alone. Re-hand URLs only if you changed RPC/REST paths or BLS key.
+
+| Already done | Needed for this upgrade |
+|--------------|------------------------|
+| Step 8 nginx + TLS | No change |
+| Keyset registered | No change |
+| `make doctor` local | No change |
+| `env/das.network.env` | No change |
+| `env/das.env` | Add `DAS_REST_AGGREGATOR_URLS` |
+| `compose.yaml` (from git pull) | Picks up new `daserver` aggregator flags |
+
 ### Non-DigitalOcean hosts
 
 If you are not on DigitalOcean, follow the same bootstrap and hardening pattern (steps 2.1–2.4), provision two separate disks with the sizes above, then complete [step 3](#3-format-and-mount-volumes) before continuing.
@@ -675,3 +796,4 @@ Optional:
 - `PARENT_CHAIN_BEACON_RPC` is required for Ethereum/Sepolia blob reads.
 - Keep private keys out of shell history and git.
 - Expose DAS over HTTPS via nginx (step 8); do not publish ports `9876`/`9877` to the internet.
+- Set `DAS_REST_AGGREGATOR_URLS` to sibling committee REST bases (step 9) so late joiners can backfill batch data.
