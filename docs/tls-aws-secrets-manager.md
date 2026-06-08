@@ -52,9 +52,13 @@ All commands from the **committee-node repo root** unless noted.
 
 ### Step 1 — Install tools
 
+Ubuntu 24.04 does **not** ship `awscli` in apt. Use the repo installer for **AWS CLI v2**:
+
 ```bash
 sudo apt-get update
-sudo apt-get install -y nginx awscli
+sudo apt-get install -y nginx
+make install-aws-cli
+aws --version   # expect aws-cli/2.x
 ```
 
 ### Step 2 — Store AWS credentials on the host
@@ -155,7 +159,7 @@ make fetch-tls-aws
 | `Unable to locate credentials` | Complete Step 2 |
 | `AccessDeniedException` | Ask Blessnet ops to fix IAM permissions on the two secrets |
 | `ResourceNotFoundException` | Wrong `COMMITTEE_PROFILE` or secrets not created yet in AWS |
-| `aws CLI not found` | `sudo apt-get install -y awscli` |
+| `aws CLI not found` | `make install-aws-cli` (not `apt install awscli` on Ubuntu 24.04) |
 
 Manual check (optional):
 
