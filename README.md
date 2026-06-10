@@ -5,7 +5,7 @@ Docker Compose deployment for a co-hosted DAS + Nitro validator (one fast-confir
 A committee node runs both:
 
 - `arbitrum-das` (standalone DAS), and
-- `validator` (Nitro staker with fast-confirm flag enabled).
+- `validator` (Nitro staker with **Defensive** strategy and fast-confirm enabled).
 
 Production-like setups may split DAS and validator across separate hosts using the same deployment.
 
@@ -686,7 +686,25 @@ curl -I "https://<sibling>/rest/get-by-hash/<hash-from-validator-log>"
 
 ---
 
-## Upgrading existing committee nodes (peer backfill)
+## Upgrading existing committee nodes
+
+### Staker strategy (`Defensive`, v0.2.1+)
+
+If you deployed before the default changed from `MakeNodes` to `Defensive`, pull latest and recreate the validator (no on-chain change):
+
+```bash
+cd ~/committee-node
+git pull
+docker compose --env-file env/das.env --env-file env/validator.env up -d --force-recreate validator
+```
+
+Confirm the running process:
+
+```bash
+docker inspect orbit-validator --format '{{json .Args}}' | tr ',' '\n' | grep -A1 staker.strategy
+```
+
+### Peer backfill (DAS 404s)
 
 For servers that already completed steps 1–8 (doctor passes, nginx/TLS live, keyset registered) but the validator is stuck on DAS 404s:
 
@@ -791,6 +809,7 @@ Optional:
 
 ## Notes
 
+- External committee validators use staker strategy **`Defensive`**: they follow the chain and only post on the parent chain when they disagree with an assertion. Blessnet's **internal** `validator-nitro` should keep **`MakeNodes`** so one operator posts assertions; external members still participate in fast confirmation without racing for gas.
 - Images are pinned by digest in env files. Update digests as part of release process.
 - For external validator hosts, `SEQUENCER_FEED_URL` must be externally reachable.
 - `PARENT_CHAIN_BEACON_RPC` is required for Ethereum/Sepolia blob reads.
