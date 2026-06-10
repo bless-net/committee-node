@@ -1,8 +1,12 @@
 # Committee Node Changelog
 
+## 0.2.2
+
+- Default validator staker strategy is now **`ResolveNodes`** (was `Defensive` in v0.2.1). **`Defensive` does not participate in multisig Safe fast confirmation** in Nitro; external FC committee members need **`ResolveNodes`** so they post Safe `approveHash` txs without racing to create assertions. After `git pull`, recreate the validator: `docker compose --env-file env/das.env --env-file env/validator.env up -d --force-recreate validator`.
+
 ## 0.2.1
 
-- Default validator staker strategy is now **`Defensive`** (was `MakeNodes`). External committee members still enable fast confirmation but no longer race to post every assertion on the parent chain. After `git pull`, recreate the validator: `docker compose --env-file env/das.env --env-file env/validator.env up -d --force-recreate validator`.
+- Default validator staker strategy changed to **`Defensive`** (was `MakeNodes`). **Superseded by 0.2.2** — use **`ResolveNodes`** for FC committee members instead.
 
 ## 0.2.0
 
