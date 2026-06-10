@@ -68,7 +68,7 @@ services:
       - --node.batch-poster.enable=false
       - --node.staker.enable=true
       - --node.staker.strategy
-      - Defensive
+      - ResolveNodes
       - --node.staker.parent-chain-wallet.private-key
       - ${VALIDATOR_PRIVATE_KEY:?missing VALIDATOR_PRIVATE_KEY}
       - --node.bold.enable-fast-confirmation=${ENABLE_FAST_CONFIRMATION:-true}

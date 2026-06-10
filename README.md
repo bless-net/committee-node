@@ -5,7 +5,7 @@ Docker Compose deployment for a co-hosted DAS + Nitro validator (one fast-confir
 A committee node runs both:
 
 - `arbitrum-das` (standalone DAS), and
-- `validator` (Nitro staker with **Defensive** strategy and fast-confirm enabled).
+- `validator` (Nitro staker with **`ResolveNodes`** strategy and fast-confirm enabled).
 
 Production-like setups may split DAS and validator across separate hosts using the same deployment.
 
@@ -688,21 +688,30 @@ curl -I "https://<sibling>/rest/get-by-hash/<hash-from-validator-log>"
 
 ## Upgrading existing committee nodes
 
-### Staker strategy (`Defensive`, v0.2.1+)
+### Staker strategy (`ResolveNodes`, v0.2.2+)
 
-If you deployed before the default changed from `MakeNodes` to `Defensive`, pull latest and recreate the validator (no on-chain change):
+External committee validators must use **`ResolveNodes`**, not **`Defensive`**, when the chain uses a multisig fast-confirmation Safe (e.g. 3/3). Nitro only runs Safe `approveHash` / `execTransaction` FC logic for strategies at **`ResolveNodes` or higher** (`MakeNodes`). **`Defensive` does not sign or confirm via the FC Safe** — with a 3/3 Safe that stalls fast confirmation entirely.
+
+**Fix hosts already on `Defensive`** (no on-chain change; run on each external committee droplet):
 
 ```bash
 cd ~/committee-node
 git pull
 docker compose --env-file env/das.env --env-file env/validator.env up -d --force-recreate validator
-```
-
-Confirm the running process:
-
-```bash
 docker inspect orbit-validator --format '{{json .Args}}' | tr ',' '\n' | grep -A1 staker.strategy
 ```
+
+Expected: `"--node.staker.strategy"` followed by `ResolveNodes` (not `Defensive` or `MakeNodes`).
+
+If you cannot `git pull` yet, patch `compose.yaml` in place then recreate:
+
+```bash
+cd ~/committee-node
+sed -i 's/- Defensive/- ResolveNodes/' compose.yaml
+docker compose --env-file env/das.env --env-file env/validator.env up -d --force-recreate validator
+```
+
+After both externals are on `ResolveNodes`, the internal `validator-nitro` (`MakeNodes`) can collect 2/3 Safe approvals and submit `Exec Transaction`. Watch the FC Safe on Sepolia — `nonce` should increase and you should see `Exec Transaction` (not just `Approve Hash`).
 
 ### Peer backfill (DAS 404s)
 
@@ -809,7 +818,7 @@ Optional:
 
 ## Notes
 
-- External committee validators use staker strategy **`Defensive`**: they follow the chain and only post on the parent chain when they disagree with an assertion. Blessnet's **internal** `validator-nitro` should keep **`MakeNodes`** so one operator posts assertions; external members still participate in fast confirmation without racing for gas.
+- External committee validators use staker strategy **`ResolveNodes`**: they resolve and confirm assertions (including Safe FC `approveHash` signatures) but do **not** race to post new assertions. Do **not** use **`Defensive`** on FC committee members — Nitro skips Safe fast-confirmation for that mode. Blessnet's **internal** `validator-nitro` should keep **`MakeNodes`** (single assertion poster + Safe exec driver).
 - Images are pinned by digest in env files. Update digests as part of release process.
 - For external validator hosts, `SEQUENCER_FEED_URL` must be externally reachable.
 - `PARENT_CHAIN_BEACON_RPC` is required for Ethereum/Sepolia blob reads.
