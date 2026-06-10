@@ -1,5 +1,9 @@
 # Committee Node Changelog
 
+## 0.2.1
+
+- Default validator staker strategy is now **`Defensive`** (was `MakeNodes`). External committee members still enable fast confirmation but no longer race to post every assertion on the parent chain. After `git pull`, recreate the validator: `docker compose --env-file env/das.env --env-file env/validator.env up -d --force-recreate validator`.
+
 ## 0.2.0
 
 - Added `Makefile` for deployment operations (`validate`, `render`, `install`, `doctor`, `upgrade`, `rollback`).
