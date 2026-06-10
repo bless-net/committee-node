@@ -74,6 +74,7 @@ services:
       - --node.bold.enable-fast-confirmation=${ENABLE_FAST_CONFIRMATION:-true}
       - --node.bold.assertion-posting-interval
       - ${ASSERTION_INTERVAL:?missing ASSERTION_INTERVAL}
+      - --node.bold.rpc-block-number=safe
       - --node.data-availability.rest-aggregator.enable=true
       - --node.data-availability.rest-aggregator.urls
       - http://arbitrum-das:9877
